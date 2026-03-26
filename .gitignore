@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+node_modules/
+datasets/
+*.log
+.idea/
+.vscode/
+*.egg-info/
+dist/
+build/
+
+# 文档和图表（不上传）
+*.md
+*.docx
+*.txt
+*.pdf
+图表/
+reports/

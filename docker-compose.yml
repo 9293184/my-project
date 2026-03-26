@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  ai-security-platform:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-security-platform
+    ports:
+      - "8000:8000"   # 后端 API
+      - "5173:5173"   # 前端界面
+      - "11434:11434" # Ollama API
+    volumes:
+      - ./datasets:/app/datasets
+      - ./models:/app/models
+      - ./reports:/app/reports
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_MODEL=qwen3-defender
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  ollama_data:

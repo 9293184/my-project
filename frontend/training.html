@@ -1,0 +1,626 @@
+<!-- 训练管理页面内容 -->
+<section id="page-training" class="page">
+    <div class="page-header">
+        <h1 class="page-title">训练管理</h1>
+        <button class="btn btn-primary" onclick="openStartTrainingModal()">
+            <i class="fas fa-play"></i> 启动新训练
+        </button>
+    </div>
+
+    <!-- 训练任务列表 -->
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-list"></i> 训练任务</h2>
+            <button class="btn btn-outline" onclick="refreshTrainingTasks()">
+                <i class="fas fa-sync"></i> 刷新
+            </button>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>任务ID</th>
+                        <th>模型</th>
+                        <th>数据集</th>
+                        <th>状态</th>
+                        <th>进度</th>
+                        <th>开始时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="training-tasks-table">
+                    <tr>
+                        <td colspan="7" class="text-center">暂无训练任务</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 可用模型和数据集 -->
+    <div class="training-resources-grid">
+        <div class="card">
+            <div class="card-header">
+                <h2><i class="fas fa-robot"></i> 可用模型</h2>
+            </div>
+            <div class="card-body">
+                <div id="available-models-list" class="resource-list">
+                    <div class="loading">加载中...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2><i class="fas fa-database"></i> 可用数据集</h2>
+            </div>
+            <div class="card-body">
+                <div id="available-datasets-list" class="resource-list">
+                    <div class="loading">加载中...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- 启动训练弹窗 -->
+<div class="modal" id="start-training-modal">
+    <div class="modal-content modal-large">
+        <div class="modal-header">
+            <h2>启动新训练任务</h2>
+            <button class="modal-close" onclick="closeModal('start-training-modal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>选择基础模型 <span class="required">*</span></label>
+                <select id="train-model-select" class="form-control">
+                    <option value="">-- 请选择 --</option>
+                </select>
+                <small class="form-hint">选择用于训练的基础模型</small>
+            </div>
+
+            <div class="form-group">
+                <label>选择训练数据集 <span class="required">*</span></label>
+                <select id="train-dataset-select" class="form-control">
+                    <option value="">-- 请选择 --</option>
+                </select>
+                <small class="form-hint">选择训练使用的数据集</small>
+            </div>
+
+            <div class="form-group">
+                <label>输出目录 <span class="required">*</span></label>
+                <input type="text" id="train-output-dir" class="form-control" 
+                    value="/app/models/trained/qwen-defender" 
+                    placeholder="/app/models/trained/model-name">
+                <small class="form-hint">训练后模型的保存路径</small>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>训练轮数 (Epochs)</label>
+                    <input type="number" id="train-epochs" class="form-control" value="3" min="1" max="10">
+                </div>
+
+                <div class="form-group">
+                    <label>批次大小 (Batch Size)</label>
+                    <input type="number" id="train-batch-size" class="form-control" value="1" min="1" max="16">
+                </div>
+
+                <div class="form-group">
+                    <label>学习率</label>
+                    <input type="number" id="train-learning-rate" class="form-control" 
+                        value="0.0002" step="0.0001" min="0.0001" max="0.01">
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>LoRA Rank</label>
+                    <input type="number" id="train-lora-rank" class="form-control" value="8" min="4" max="64">
+                </div>
+
+                <div class="form-group">
+                    <label>最大序列长度</label>
+                    <input type="number" id="train-max-seq-length" class="form-control" value="512" min="128" max="2048">
+                </div>
+
+                <div class="form-group">
+                    <label>使用 GPU</label>
+                    <select id="train-use-gpu" class="form-control">
+                        <option value="true">是</option>
+                        <option value="false">否</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeModal('start-training-modal')">取消</button>
+            <button class="btn btn-primary" onclick="startTraining()">
+                <i class="fas fa-play"></i> 开始训练
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- 训练详情弹窗 -->
+<div class="modal" id="training-detail-modal">
+    <div class="modal-content modal-large">
+        <div class="modal-header">
+            <h2>训练任务详情</h2>
+            <button class="modal-close" onclick="closeModal('training-detail-modal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="training-detail-grid">
+                <div class="detail-section">
+                    <h3>基本信息</h3>
+                    <div class="detail-item">
+                        <span class="label">任务ID:</span>
+                        <span id="detail-task-id">-</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">状态:</span>
+                        <span id="detail-status" class="badge">-</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">进度:</span>
+                        <div class="progress-bar">
+                            <div id="detail-progress-fill" class="progress-fill" style="width: 0%"></div>
+                            <span id="detail-progress-text" class="progress-text">0%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="detail-section">
+                    <h3>配置信息</h3>
+                    <div class="detail-item">
+                        <span class="label">模型:</span>
+                        <span id="detail-model">-</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">数据集:</span>
+                        <span id="detail-dataset">-</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">训练轮数:</span>
+                        <span id="detail-epochs">-</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="logs-section">
+                <h3>训练日志</h3>
+                <div id="training-logs" class="logs-container">
+                    <div class="loading">加载中...</div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeModal('training-detail-modal')">关闭</button>
+            <button class="btn btn-danger" onclick="stopTraining(currentTaskId)" id="stop-training-btn">
+                <i class="fas fa-stop"></i> 停止训练
+            </button>
+        </div>
+    </div>
+</div>
+
+<style>
+.training-resources-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 1.5rem;
+    margin-top: 1.5rem;
+}
+
+.resource-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.resource-item {
+    padding: 1rem;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    transition: all 0.2s;
+}
+
+.resource-item:hover {
+    border-color: #2196F3;
+    box-shadow: 0 2px 8px rgba(33, 150, 243, 0.1);
+}
+
+.resource-item h4 {
+    margin: 0 0 0.5rem 0;
+    color: #333;
+}
+
+.resource-item .meta {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.875rem;
+    color: #666;
+}
+
+.form-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+}
+
+.modal-large {
+    max-width: 800px;
+}
+
+.training-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 2rem;
+    margin-bottom: 2rem;
+}
+
+.detail-section h3 {
+    margin: 0 0 1rem 0;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #2196F3;
+    color: #333;
+}
+
+.detail-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.detail-item .label {
+    font-weight: 500;
+    color: #666;
+}
+
+.progress-bar {
+    position: relative;
+    width: 200px;
+    height: 24px;
+    background: #f0f0f0;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #2196F3, #21CBF3);
+    transition: width 0.3s;
+}
+
+.progress-text {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #333;
+}
+
+.logs-section {
+    margin-top: 2rem;
+}
+
+.logs-section h3 {
+    margin: 0 0 1rem 0;
+    color: #333;
+}
+
+.logs-container {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 1rem;
+    border-radius: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.875rem;
+    line-height: 1.6;
+}
+
+.log-line {
+    margin-bottom: 0.25rem;
+}
+
+.badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.badge.pending {
+    background: #FFC107;
+    color: #fff;
+}
+
+.badge.running {
+    background: #2196F3;
+    color: #fff;
+}
+
+.badge.completed {
+    background: #4CAF50;
+    color: #fff;
+}
+
+.badge.failed {
+    background: #F44336;
+    color: #fff;
+}
+
+.badge.stopped {
+    background: #9E9E9E;
+    color: #fff;
+}
+</style>
+
+<script>
+let currentTaskId = null;
+let trainingRefreshInterval = null;
+
+// 加载可用模型
+async function loadAvailableModels() {
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/train/models`);
+        const data = await response.json();
+        
+        const container = document.getElementById('available-models-list');
+        const select = document.getElementById('train-model-select');
+        
+        if (data.models && data.models.length > 0) {
+            container.innerHTML = data.models.map(model => `
+                <div class="resource-item">
+                    <h4>${model.name}</h4>
+                    <div class="meta">
+                        <span><i class="fas fa-cube"></i> ${model.size}</span>
+                        <span><i class="fas fa-tag"></i> ${model.type}</span>
+                    </div>
+                    <p style="margin: 0.5rem 0 0 0; font-size: 0.875rem; color: #666;">
+                        ${model.description}
+                    </p>
+                </div>
+            `).join('');
+            
+            select.innerHTML = '<option value="">-- 请选择 --</option>' +
+                data.models.map(model => `<option value="${model.name}">${model.name} (${model.size})</option>`).join('');
+        } else {
+            container.innerHTML = '<p class="text-center">暂无可用模型</p>';
+        }
+    } catch (error) {
+        console.error('加载模型失败:', error);
+        showToast('加载模型失败', 'error');
+    }
+}
+
+// 加载可用数据集
+async function loadAvailableDatasets() {
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/train/datasets`);
+        const data = await response.json();
+        
+        const container = document.getElementById('available-datasets-list');
+        const select = document.getElementById('train-dataset-select');
+        
+        if (data.datasets && data.datasets.length > 0) {
+            container.innerHTML = data.datasets.map(dataset => `
+                <div class="resource-item">
+                    <h4>${dataset.name}</h4>
+                    <div class="meta">
+                        <span><i class="fas fa-database"></i> ${(dataset.size / 1024 / 1024).toFixed(2)} MB</span>
+                        <span><i class="fas fa-list"></i> ${dataset.sample_count} 条样本</span>
+                    </div>
+                </div>
+            `).join('');
+            
+            select.innerHTML = '<option value="">-- 请选择 --</option>' +
+                data.datasets.map(dataset => `<option value="${dataset.path}">${dataset.name} (${dataset.sample_count}条)</option>`).join('');
+        } else {
+            container.innerHTML = '<p class="text-center">暂无可用数据集</p>';
+        }
+    } catch (error) {
+        console.error('加载数据集失败:', error);
+        showToast('加载数据集失败', 'error');
+    }
+}
+
+// 加载训练任务列表
+async function loadTrainingTasks() {
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/train/list`);
+        const data = await response.json();
+        
+        const tbody = document.getElementById('training-tasks-table');
+        
+        if (data.tasks && data.tasks.length > 0) {
+            tbody.innerHTML = data.tasks.map(task => `
+                <tr>
+                    <td>${task.task_id}</td>
+                    <td>${task.config.model_name}</td>
+                    <td>${task.config.dataset_path.split('/').pop()}</td>
+                    <td><span class="badge ${task.status}">${getStatusText(task.status)}</span></td>
+                    <td>
+                        <div class="progress-bar" style="width: 150px;">
+                            <div class="progress-fill" style="width: ${task.progress}%"></div>
+                            <span class="progress-text">${task.progress}%</span>
+                        </div>
+                    </td>
+                    <td>${task.start_time ? new Date(task.start_time).toLocaleString() : '-'}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline" onclick="viewTrainingDetail('${task.task_id}')">
+                            <i class="fas fa-eye"></i> 查看
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+        } else {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center">暂无训练任务</td></tr>';
+        }
+    } catch (error) {
+        console.error('加载训练任务失败:', error);
+        showToast('加载训练任务失败', 'error');
+    }
+}
+
+function getStatusText(status) {
+    const statusMap = {
+        'pending': '等待中',
+        'running': '运行中',
+        'completed': '已完成',
+        'failed': '失败',
+        'stopped': '已停止'
+    };
+    return statusMap[status] || status;
+}
+
+// 打开启动训练弹窗
+function openStartTrainingModal() {
+    document.getElementById('start-training-modal').classList.add('active');
+    loadAvailableModels();
+    loadAvailableDatasets();
+}
+
+// 启动训练
+async function startTraining() {
+    const modelName = document.getElementById('train-model-select').value;
+    const datasetPath = document.getElementById('train-dataset-select').value;
+    const outputDir = document.getElementById('train-output-dir').value;
+    const epochs = parseInt(document.getElementById('train-epochs').value);
+    const batchSize = parseInt(document.getElementById('train-batch-size').value);
+    const learningRate = parseFloat(document.getElementById('train-learning-rate').value);
+    const loraRank = parseInt(document.getElementById('train-lora-rank').value);
+    const maxSeqLength = parseInt(document.getElementById('train-max-seq-length').value);
+    const useGpu = document.getElementById('train-use-gpu').value === 'true';
+    
+    if (!modelName || !datasetPath || !outputDir) {
+        showToast('请填写所有必填项', 'error');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/train/start`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                model_name: modelName,
+                dataset_path: datasetPath,
+                output_dir: outputDir,
+                epochs: epochs,
+                batch_size: batchSize,
+                learning_rate: learningRate,
+                lora_rank: loraRank,
+                max_seq_length: maxSeqLength,
+                use_gpu: useGpu
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            showToast('训练任务已启动', 'success');
+            closeModal('start-training-modal');
+            loadTrainingTasks();
+        } else {
+            showToast(data.error || '启动训练失败', 'error');
+        }
+    } catch (error) {
+        console.error('启动训练失败:', error);
+        showToast('启动训练失败', 'error');
+    }
+}
+
+// 查看训练详情
+async function viewTrainingDetail(taskId) {
+    currentTaskId = taskId;
+    document.getElementById('training-detail-modal').classList.add('active');
+    
+    // 开始定时刷新
+    refreshTrainingDetail(taskId);
+    trainingRefreshInterval = setInterval(() => refreshTrainingDetail(taskId), 3000);
+}
+
+async function refreshTrainingDetail(taskId) {
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/train/status/${taskId}`);
+        const task = await response.json();
+        
+        document.getElementById('detail-task-id').textContent = task.task_id;
+        document.getElementById('detail-status').textContent = getStatusText(task.status);
+        document.getElementById('detail-status').className = `badge ${task.status}`;
+        document.getElementById('detail-progress-fill').style.width = `${task.progress}%`;
+        document.getElementById('detail-progress-text').textContent = `${task.progress}%`;
+        document.getElementById('detail-model').textContent = task.config.model_name;
+        document.getElementById('detail-dataset').textContent = task.config.dataset_path.split('/').pop();
+        document.getElementById('detail-epochs').textContent = task.config.epochs;
+        
+        // 显示日志
+        const logsContainer = document.getElementById('training-logs');
+        if (task.logs && task.logs.length > 0) {
+            logsContainer.innerHTML = task.logs.map(log => 
+                `<div class="log-line">${log}</div>`
+            ).join('');
+            logsContainer.scrollTop = logsContainer.scrollHeight;
+        }
+        
+        // 如果任务已完成或失败，停止刷新
+        if (task.status === 'completed' || task.status === 'failed' || task.status === 'stopped') {
+            if (trainingRefreshInterval) {
+                clearInterval(trainingRefreshInterval);
+                trainingRefreshInterval = null;
+            }
+        }
+    } catch (error) {
+        console.error('刷新训练详情失败:', error);
+    }
+}
+
+// 停止训练
+async function stopTraining(taskId) {
+    if (!confirm('确定要停止此训练任务吗？')) return;
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/train/stop/${taskId}`, {
+            method: 'POST'
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            showToast('训练已停止', 'success');
+            refreshTrainingDetail(taskId);
+        } else {
+            showToast(data.error || '停止训练失败', 'error');
+        }
+    } catch (error) {
+        console.error('停止训练失败:', error);
+        showToast('停止训练失败', 'error');
+    }
+}
+
+// 刷新训练任务列表
+function refreshTrainingTasks() {
+    loadTrainingTasks();
+    showToast('已刷新', 'success');
+}
+
+// 关闭弹窗时清理定时器
+function closeModal(modalId) {
+    document.getElementById(modalId).classList.remove('active');
+    if (modalId === 'training-detail-modal' && trainingRefreshInterval) {
+        clearInterval(trainingRefreshInterval);
+        trainingRefreshInterval = null;
+    }
+}
+
+// 页面加载时初始化
+if (document.getElementById('page-training')) {
+    loadAvailableModels();
+    loadAvailableDatasets();
+    loadTrainingTasks();
+}
+</script>
