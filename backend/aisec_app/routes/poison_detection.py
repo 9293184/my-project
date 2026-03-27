@@ -2,7 +2,7 @@
 import logging
 from flask import Blueprint, current_app, jsonify, request
 
-from ..training_data.poison_detector import PoisonDetector
+from ..security_utils import PoisonDetector
 from ..errors import ValidationError
 
 logger = logging.getLogger(__name__)

@@ -10,8 +10,7 @@ from ..db import db_cursor
 from ..errors import NotFoundError, ValidationError
 from ..services.config_service import get_judge_config
 from ..services.llm_service import call_chat, OLLAMA_API_BASE
-from ..training_data.sample_generator import SampleGenerator
-from ..training_data.poison_detector import PoisonDetector
+from ..security_utils import SampleGenerator, PoisonDetector
 
 logger = logging.getLogger(__name__)
 

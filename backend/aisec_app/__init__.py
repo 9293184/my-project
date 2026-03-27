@@ -15,13 +15,11 @@ from .routes.health import bp as health_bp
 from .routes.keys import bp as keys_bp
 from .routes.models import bp as models_bp
 from .routes.stats import bp as stats_bp
-from .routes.training_data import bp as training_data_bp
-from .routes.adversarial import bp as adversarial_bp
 from .routes.poison_detection import bp as poison_detection_bp
-from .routes.evaluation import bp as evaluation_bp
-from .routes.security_policies import bp as security_policies_bp
-from .routes.smart_mining import bp as smart_mining_bp
-from .routes.multimodal_security import bp as multimodal_security_bp
+
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from proxy.routes import bp as proxy_bp, init_audit_engine
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +51,25 @@ def create_app() -> Flask:
     app.register_blueprint(chat_bp)
     app.register_blueprint(chat_logs_bp)
     app.register_blueprint(attachment_bp)
-    app.register_blueprint(training_data_bp)
-    app.register_blueprint(adversarial_bp)
     app.register_blueprint(stats_bp)
     app.register_blueprint(config_bp)
     app.register_blueprint(health_bp)
     app.register_blueprint(poison_detection_bp)
-    app.register_blueprint(evaluation_bp)
-    app.register_blueprint(security_policies_bp)
-    app.register_blueprint(smart_mining_bp)
-    app.register_blueprint(multimodal_security_bp)
+    app.register_blueprint(proxy_bp)
+
+    # 初始化代理审查引擎（使用数据库中的judge配置或默认Ollama）
+    try:
+        from .services.config_service import get_judge_config
+        from .db import db_cursor
+        with db_cursor(settings) as (conn, cursor):
+            judge_url, judge_model, judge_key = get_judge_config(cursor)
+        init_audit_engine(
+            judge_url=judge_url or 'http://localhost:11434/v1',
+            judge_model=judge_model or 'qwen2.5:latest',
+            judge_key=judge_key,
+        )
+    except Exception as e:
+        logger.warning(f'代理审查引擎初始化失败(将使用默认配置): {e}')
+        init_audit_engine()
 
     return app

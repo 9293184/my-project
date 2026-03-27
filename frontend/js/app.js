@@ -620,35 +620,43 @@ function removeAttachment() {
     `;
 }
 
+// 对话历史（用于多轮对话）
+let chatHistory = [];
+
+function clearChatHistory() {
+    chatHistory = [];
+    const chatContainer = document.getElementById('chat-messages');
+    chatContainer.innerHTML = `
+        <div class="chat-welcome">
+            <i class="fas fa-robot"></i>
+            <p>选择代理项目后开始对话</p>
+            <p style="font-size:0.85rem;color:#888;">所有消息将通过安全代理转发并审查</p>
+        </div>`;
+    showToast('对话历史已清空', 'success');
+}
+
 async function sendMessage() {
-    const select = document.getElementById('chat-model-select');
+    const proxySelect = document.getElementById('chat-proxy-select');
     const input = document.getElementById('chat-input');
     const message = input.value.trim();
-    
-    if (select.value === '') {
-        showToast('请先选择模型', 'warning');
+
+    if (!proxySelect || !proxySelect.value) {
+        showToast('请先选择代理项目', 'warning');
         return;
     }
     if (!message && !currentAttachment) {
         return;
     }
-    
-    const selectedValue = select.value;
-    const isLocalModel = selectedValue.startsWith('ollama:') || selectedValue.startsWith('hf:');
-    const model = isLocalModel ? null : modelsCache.find(m => m.id === parseInt(selectedValue));
-    
-    if (!isLocalModel && (!model || !model.api_key)) {
-        showToast('该模型未配置 API Key', 'error');
-        return;
-    }
-    const modelIdentifier = isLocalModel ? selectedValue : model.name;
-    
+
+    const proxyId = proxySelect.value;
+    const modelOverride = document.getElementById('chat-model-override').value.trim();
+
     const chatContainer = document.getElementById('chat-messages');
-    
+
     // 清除欢迎信息
     const welcome = chatContainer.querySelector('.chat-welcome');
     if (welcome) welcome.remove();
-    
+
     // 构建用户消息显示（含附件）
     let userContentHtml = escapeHtml(message || '');
     if (currentAttachment) {
@@ -658,102 +666,122 @@ async function sendMessage() {
             userContentHtml += `<div class="user-attachment"><i class="fas fa-file"></i> ${escapeHtml(currentAttachment.name)}</div>`;
         }
     }
-    
-    // 添加用户消息
+
+    // 添加用户消息到界面
     chatContainer.innerHTML += `
         <div class="chat-message user">
             <div class="avatar"><i class="fas fa-user"></i></div>
             <div class="content">${userContentHtml}</div>
         </div>
     `;
-    
+
     input.value = '';
     chatContainer.scrollTop = chatContainer.scrollHeight;
-    
+
     // 显示加载状态
     const loadingId = 'loading-' + Date.now();
-    const loadingText = currentAttachment ? '正在处理附件...' : '正在思考...';
     chatContainer.innerHTML += `
         <div class="chat-message assistant" id="${loadingId}">
             <div class="avatar"><i class="fas fa-robot"></i></div>
-            <div class="content"><i class="fas fa-spinner fa-spin"></i> ${loadingText}</div>
+            <div class="content"><i class="fas fa-spinner fa-spin"></i> 正在通过代理转发...</div>
         </div>
     `;
     chatContainer.scrollTop = chatContainer.scrollHeight;
-    
+
     // 保存附件引用并清除预览
     const attachment = currentAttachment;
     if (currentAttachment) {
         removeAttachment();
     }
-    
-    // 调用后端 API
+
+    // 构建 messages 数组（多轮对话）
+    chatHistory.push({ role: 'user', content: message || '请分析这个文件' });
+
+    // 通过代理 API 转发 — 只传 _proxy_id，后端自动匹配配置
     try {
-        let result;
-        if (attachment) {
-            // 使用 FormData 上传附件
-            const formData = new FormData();
-            formData.append(isLocalModel ? 'model_id' : 'model_name', modelIdentifier);
-            formData.append('message', message || '请分析这个文件');
-            formData.append('user_id', 'test-user');
-            formData.append('file', attachment.file);
-            
-            const response = await fetch(`${API_BASE}/chat/attachment`, {
-                method: 'POST',
-                body: formData
-            });
-            result = await response.json();
-            if (!result.success) {
-                throw new Error(result.error || '请求失败');
-            }
-        } else {
-            const scene = document.getElementById('chat-scene-select')?.value || 'general';
-            result = await API.chat(modelIdentifier, message, 'test-user', scene);
-        }
-        
+        const proxyBody = {
+            _proxy_id: proxyId,
+            messages: chatHistory.slice(),
+        };
+        if (modelOverride) proxyBody.model = modelOverride;
+
+        const resp = await fetch(`${API_BASE}/proxy/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(proxyBody),
+        });
+        const data = await resp.json();
+
         // 移除加载状态
         document.getElementById(loadingId)?.remove();
-        
-        // 检查是否被拦截
-        if (result.data.blocked) {
-            const blockType = result.data.block_type === 'input' ? '输入审查' : '输出审查';
+
+        // 被拦截
+        if (data.blocked) {
+            const blockType = data.block_type === 'input' ? '输入审查' : '输出审查';
+            const audit = data.audit || {};
             chatContainer.innerHTML += `
                 <div class="chat-message blocked">
                     <div class="avatar" style="background: var(--danger-color);"><i class="fas fa-shield-alt"></i></div>
                     <div class="content">
                         <strong>🚫 已拦截 (${blockType})</strong><br>
-                        <span class="block-reason">${escapeHtml(result.data.reason)}</span>
+                        <span class="block-reason">${escapeHtml(audit.reason || '内容不安全')}</span>
                         <div class="block-meta">
-                            <span class="risk-score">风险评分: ${result.data.confidence}%</span>
-                            <span class="response-time">${result.data.response_time_ms}ms</span>
+                            <span class="risk-score">风险评分: ${audit.risk_score || 0}</span>
+                            <span class="response-time">${data.latency_ms || 0}ms</span>
                         </div>
                     </div>
                 </div>
             `;
+            // 拦截时移除最后一条 user 消息，不计入历史
+            chatHistory.pop();
             showToast(`内容被${blockType}拦截`, 'warning');
+
+        } else if (data.error) {
+            // 代理返回错误
+            throw new Error(data.error.message || JSON.stringify(data.error));
+
         } else {
-            // 显示 AI 回复
-            const checkBadge = result.data.check_enabled 
-                ? '<span class="check-badge success"><i class="fas fa-check-circle"></i> 审查已完成</span>' 
-                : '';
+            // 成功：提取 AI 回复
+            const choices = data.choices || [];
+            const reply = choices.length > 0 ? (choices[0].message?.content || '') : '(无回复内容)';
+            const proxy = data._proxy || {};
+            const latency = proxy.latency_ms || 0;
+            const tokens = proxy.tokens || {};
+            const inputAudit = proxy.input_audit;
+            const outputAudit = proxy.output_audit;
+
+            // 构建审查标记
+            let auditBadges = '';
+            if (inputAudit) {
+                const ic = inputAudit.safe ? 'success' : 'danger';
+                auditBadges += `<span class="check-badge ${ic}"><i class="fas fa-arrow-right"></i> 输入: ${inputAudit.safe ? '安全' : '风险(' + inputAudit.risk_score + ')'}</span> `;
+            }
+            if (outputAudit) {
+                const oc = outputAudit.safe ? 'success' : 'danger';
+                auditBadges += `<span class="check-badge ${oc}"><i class="fas fa-arrow-left"></i> 输出: ${outputAudit.safe ? '安全' : '风险(' + outputAudit.risk_score + ')'}</span> `;
+            }
+
             chatContainer.innerHTML += `
                 <div class="chat-message assistant">
                     <div class="avatar"><i class="fas fa-robot"></i></div>
-                    <div class="content">${escapeHtml(result.data.response)}</div>
+                    <div class="content">${escapeHtml(reply)}</div>
                     <div class="message-meta">
-                        ${checkBadge}
-                        <small class="response-time">${result.data.response_time_ms}ms</small>
+                        ${auditBadges}
+                        <small class="response-time">${latency}ms</small>
+                        ${tokens.total_tokens ? `<small style="margin-left:0.5rem;">Token: ${tokens.total_tokens}</small>` : ''}
                     </div>
                 </div>
             `;
+
+            // 记录 assistant 回复到历史
+            chatHistory.push({ role: 'assistant', content: reply });
         }
+
         chatContainer.scrollTop = chatContainer.scrollHeight;
-        
+
     } catch (error) {
-        // 移除加载状态
         document.getElementById(loadingId)?.remove();
-        
-        // 显示错误
+        chatHistory.pop(); // 移除失败的 user 消息
         chatContainer.innerHTML += `
             <div class="chat-message blocked">
                 <div class="avatar" style="background: var(--danger-color);"><i class="fas fa-robot"></i></div>

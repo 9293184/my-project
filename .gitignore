@@ -19,3 +19,7 @@ build/
 *.pdf
 图表/
 reports/
+
+# 运行时数据
+*.db
+*.jsonl
