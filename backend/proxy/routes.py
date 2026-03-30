@@ -10,8 +10,11 @@ from flask import Blueprint, jsonify, request
 
 from .gateway import forward_chat
 from .audit import AuditEngine
+from .rule_engine import RuleEngine
 from .logger import query_logs, get_log_stats
-from .tasks import create_task, get_task, list_tasks, update_task, delete_task
+from .tasks import (create_task, get_task, list_tasks, update_task, delete_task,
+                     default_audit_config, save_strategy_template,
+                     list_strategy_templates, delete_strategy_template)
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +93,14 @@ def proxy_chat():
     if not data.get("model") and task_cfg and task_cfg.get("model"):
         data["model"] = task_cfg["model"]
 
-    # 提取代理扩展参数（body优先，否则用task配置）
+    # 提取代理扩展参数
     security_prompt = data.pop("_security_prompt", task_cfg.get("security_prompt", "") if task_cfg else "")
     context_summary = data.pop("_context_summary", "")
-    enable_input = data.pop("_enable_input_audit", task_cfg["enable_input_audit"] if task_cfg else True)
-    enable_output = data.pop("_enable_output_audit", task_cfg["enable_output_audit"] if task_cfg else True)
-    min_confidence = data.pop("_min_confidence", task_cfg.get("min_confidence", 60) if task_cfg else 60)
+    audit_config = task_cfg.get("audit_config") if task_cfg else None
+    # 剥离旧的扩展字段（兼容旧调用方）
+    data.pop("_enable_input_audit", None)
+    data.pop("_enable_output_audit", None)
+    data.pop("_min_confidence", None)
 
     if not data.get("model") or not data.get("messages"):
         return jsonify({
@@ -110,10 +115,8 @@ def proxy_chat():
         audit_engine=_audit_engine,
         security_prompt=security_prompt,
         context_summary=context_summary,
-        enable_input_audit=enable_input,
-        enable_output_audit=enable_output,
+        audit_config=audit_config,
         client_ip=request.remote_addr or "",
-        min_confidence_threshold=min_confidence,
     )
 
     # 构建响应——不包含 proxy_id，直接转发
@@ -244,6 +247,8 @@ def api_create_task():
         enable_output_audit=data.get("enable_output_audit", True),
         min_confidence=data.get("min_confidence", 60),
         security_prompt=data.get("security_prompt", ""),
+        custom_regex_rules=data.get("custom_regex_rules", []),
+        audit_config=data.get("audit_config"),
     )
     return jsonify({"success": True, "task": task}), 201
 
@@ -266,6 +271,26 @@ def api_delete_task(proxy_id):
     return jsonify({"success": False, "error": "代理项目不存在"}), 404
 
 
+# ─── GET /proxy/v1/audit/categories ───────────────────
+
+@bp.get("/proxy/v1/audit/categories")
+def get_audit_categories():
+    """获取所有可用的内置规则分类"""
+    return jsonify({
+        "success": True,
+        "categories": RuleEngine.ALL_CATEGORIES,
+    })
+
+
+@bp.get("/proxy/v1/audit/default-config")
+def get_default_audit_config():
+    """获取默认审查策略配置"""
+    return jsonify({
+        "success": True,
+        "config": default_audit_config(),
+    })
+
+
 # ─── GET /proxy/v1/logs ──────────────────────────────
 
 @bp.get("/proxy/v1/logs")
@@ -284,3 +309,140 @@ def get_logs():
 def logs_stats():
     stats = get_log_stats()
     return jsonify({"success": True, **stats})
+
+
+# ─── 策略模板 CRUD ──────────────────────────────────────
+
+@bp.get("/proxy/v1/templates")
+def api_list_templates():
+    """列出所有策略模板"""
+    return jsonify({"success": True, "templates": list_strategy_templates()})
+
+
+@bp.post("/proxy/v1/templates")
+def api_save_template():
+    """保存策略模板（新建或更新）"""
+    data = request.json or {}
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "模板名称不能为空"}), 400
+    tpl = save_strategy_template(
+        name=name,
+        direction=data.get("direction", "input"),
+        security_prompt=data.get("security_prompt", ""),
+        audit_config=data.get("audit_config", {}),
+        description=data.get("description", ""),
+        tpl_id=data.get("tpl_id"),
+    )
+    return jsonify({"success": True, "template": tpl}), 201
+
+
+@bp.delete("/proxy/v1/templates/<tpl_id>")
+def api_delete_template(tpl_id):
+    """删除策略模板"""
+    if delete_strategy_template(tpl_id):
+        return jsonify({"success": True})
+    return jsonify({"success": False, "error": "模板不存在"}), 404
+
+
+# ─── AI 辅助生成 ────────────────────────────────────────
+
+@bp.post("/proxy/v1/ai/generate-prompt")
+def ai_generate_prompt():
+    """AI 辅助生成安全提示词"""
+    if _audit_engine is None:
+        return jsonify({"success": False, "error": "审查引擎未初始化"}), 500
+
+    data = request.json or {}
+    business_desc = data.get("business_desc", "").strip()
+    direction = data.get("direction", "input")
+
+    if not business_desc:
+        return jsonify({"success": False, "error": "请描述业务场景"}), 400
+
+    dir_label = {"input": "用户输入", "output": "模型输出", "both": "用户输入和模型输出"}
+    system_msg = (
+        "你是一个 LLM 安全策略专家。根据用户描述的业务场景，生成一段简洁专业的安全审查提示词。\n"
+        "该提示词将被注入到审查大模型的 system prompt 中，用于指导审查大模型判断"
+        f"{dir_label.get(direction, '用户输入')}是否存在安全风险。\n\n"
+        "要求：\n"
+        "- 直接输出提示词内容，不要加标题或解释\n"
+        "- 提示词应该明确列出该业务场景下需要拦截的风险类别\n"
+        "- 语言简洁，每条规则一行\n"
+        "- 中文输出"
+    )
+
+    try:
+        import requests as http_req
+        resp = http_req.post(
+            f"{_audit_engine.judge_url}/chat/completions",
+            headers={"Content-Type": "application/json",
+                     **({"Authorization": f"Bearer {_audit_engine.judge_key}"}
+                        if _audit_engine.judge_key else {})},
+            json={
+                "model": _audit_engine.judge_model,
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": f"业务场景：{business_desc}"},
+                ],
+                "temperature": 0.7,
+                "max_tokens": 800,
+            },
+            timeout=30,
+        )
+        result = resp.json()
+        content = result["choices"][0]["message"]["content"].strip()
+        return jsonify({"success": True, "prompt": content})
+    except Exception as e:
+        logger.error(f"[ai-generate-prompt] 生成失败: {e}")
+        return jsonify({"success": False, "error": f"生成失败: {str(e)}"}), 500
+
+
+@bp.post("/proxy/v1/ai/generate-regex")
+def ai_generate_regex():
+    """AI 辅助按规则描述生成正则表达式"""
+    if _audit_engine is None:
+        return jsonify({"success": False, "error": "审查引擎未初始化"}), 500
+
+    data = request.json or {}
+    rule_desc = data.get("rule_desc", "").strip()
+
+    if not rule_desc:
+        return jsonify({"success": False, "error": "请描述要检测的规则"}), 400
+
+    system_msg = (
+        "你是一个正则表达式专家。根据用户描述的检测需求，生成正则表达式规则。\n\n"
+        "输出格式要求（严格遵守）：\n"
+        "- 每行一条规则，格式为：规则名称 | 正则表达式\n"
+        "- 正则表达式使用 Python re 语法\n"
+        "- 只输出规则行，不要加解释、标题、代码块或其他任何文字\n"
+        "- 正则要尽量精确，避免误匹配\n\n"
+        "示例输出：\n"
+        "禁止讨论竞品 | (?:竞品A|竞品B|竞品C)\n"
+        "内部代号保护 | (?:Project\\s*X|代号\\w+)"
+    )
+
+    try:
+        import requests as http_req
+        resp = http_req.post(
+            f"{_audit_engine.judge_url}/chat/completions",
+            headers={"Content-Type": "application/json",
+                     **({"Authorization": f"Bearer {_audit_engine.judge_key}"}
+                        if _audit_engine.judge_key else {})},
+            json={
+                "model": _audit_engine.judge_model,
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": f"检测需求：{rule_desc}"},
+                ],
+                "temperature": 0.3,
+                "max_tokens": 600,
+            },
+            timeout=30,
+        )
+        result = resp.json()
+        content = result["choices"][0]["message"]["content"].strip()
+        return jsonify({"success": True, "rules": content})
+    except Exception as e:
+        logger.error(f"[ai-generate-regex] 生成失败: {e}")
+        return jsonify({"success": False, "error": f"生成失败: {str(e)}"}), 500

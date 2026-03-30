@@ -570,15 +570,14 @@
                                         <th>名称</th>
                                         <th>上游地址</th>
                                         <th>模型</th>
-                                        <th>输入审查</th>
-                                        <th>输出审查</th>
+                                        <th>审查方向</th>
                                         <th>阈值</th>
                                         <th>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody id="proxy-tasks-table">
                                     <tr>
-                                        <td colspan="8" style="text-align:center;padding:2rem;color:var(--text-secondary);">暂无代理项目</td>
+                                        <td colspan="7" style="text-align:center;padding:2rem;color:var(--text-secondary);">暂无代理项目</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -717,13 +716,18 @@
 
     <!-- 新建/编辑代理项目弹窗 -->
     <div class="modal" id="task-modal" style="display:none;">
-        <div class="modal-content">
+        <div class="modal-content" style="max-width:700px;">
             <div class="modal-header">
                 <h2 id="task-modal-title">新建代理项目</h2>
                 <button class="modal-close" onclick="closeModal('task-modal')">&times;</button>
             </div>
-            <div class="modal-body">
+            <div class="modal-body" style="max-height:70vh;overflow-y:auto;">
                 <input type="hidden" id="task-edit-id">
+
+                <!-- ── 基础配置 ── -->
+                <h3 style="margin:0 0 0.8rem;font-size:1rem;color:var(--text-primary);border-bottom:1px solid var(--border-color);padding-bottom:0.4rem;">
+                    <i class="fas fa-server" style="margin-right:0.4rem;"></i>基础配置
+                </h3>
                 <div class="form-group">
                     <label>项目名称 <span class="required">*</span></label>
                     <input type="text" id="task-name" class="form-control" placeholder="如：生产环境-Qwen代理">
@@ -732,33 +736,132 @@
                     <label>上游 API 地址 <span class="required">*</span></label>
                     <input type="text" id="task-upstream-url" class="form-control" placeholder="如：https://dashscope.aliyuncs.com/compatible-mode/v1">
                 </div>
-                <div class="form-group">
-                    <label>API Key（可选）</label>
-                    <input type="password" id="task-api-key" class="form-control" placeholder="sk-xxxx...">
-                </div>
-                <div class="form-group">
-                    <label>默认模型</label>
-                    <input type="text" id="task-model" class="form-control" placeholder="如：qwen-plus">
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
                     <div class="form-group">
-                        <label style="display:flex;align-items:center;gap:0.5rem;">
-                            <input type="checkbox" id="task-input-audit" checked> 输入审查
+                        <label>API Key（可选）</label>
+                        <input type="password" id="task-api-key" class="form-control" placeholder="sk-xxxx...">
+                    </div>
+                    <div class="form-group">
+                        <label>默认模型</label>
+                        <input type="text" id="task-model" class="form-control" placeholder="如：qwen-plus">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">
+                        <label style="margin:0;">安全提示词（可选）</label>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="aiGeneratePrompt()" id="btn-ai-prompt"
+                            style="font-size:0.75rem;padding:0.15rem 0.5rem;gap:0.3rem;">
+                            <i class="fas fa-magic"></i> AI 生成
+                        </button>
+                    </div>
+                    <textarea id="task-security-prompt" class="form-control" rows="2" placeholder="可选的安全策略提示词，如：禁止讨论竞品信息...&#10;点击 AI 生成可输入业务场景自动生成"></textarea>
+                </div>
+
+                <!-- ── 审查策略（Tab 切换） ── -->
+                <div style="display:flex;justify-content:space-between;align-items:center;margin:1.2rem 0 0;">
+                    <h3 style="margin:0;font-size:1rem;color:var(--text-primary);">
+                        <i class="fas fa-shield-alt" style="margin-right:0.4rem;color:#3498db;"></i>审查策略
+                        <span style="font-size:0.75rem;color:#888;font-weight:normal;margin-left:0.4rem;">内置规则引擎始终在后台运行</span>
+                    </h3>
+                    <div style="display:flex;gap:0.4rem;">
+                        <button type="button" class="btn btn-outline btn-sm" onclick="loadStrategyTemplate()" style="font-size:0.75rem;padding:0.15rem 0.5rem;">
+                            <i class="fas fa-download"></i> 加载模板
+                        </button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="saveStrategyTemplate()" style="font-size:0.75rem;padding:0.15rem 0.5rem;">
+                            <i class="fas fa-save"></i> 保存为模板
+                        </button>
+                    </div>
+                </div>
+                <!-- 审查方向：三选一 -->
+                <div id="ac-tabs" style="display:flex;gap:0;margin-bottom:0;border-bottom:2px solid var(--border-color);">
+                    <button type="button" class="ac-tab active" data-target="input" onclick="switchAuditTab('input')"
+                        style="flex:1;padding:0.5rem 0;border:none;background:none;font-size:0.85rem;font-weight:600;cursor:pointer;border-bottom:2px solid var(--primary-color);margin-bottom:-2px;color:var(--primary-color);">
+                        <i class="fas fa-arrow-right" style="margin-right:0.3rem;"></i>输入审查
+                    </button>
+                    <button type="button" class="ac-tab" data-target="output" onclick="switchAuditTab('output')"
+                        style="flex:1;padding:0.5rem 0;border:none;background:none;font-size:0.85rem;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--text-secondary);">
+                        <i class="fas fa-arrow-left" style="margin-right:0.3rem;"></i>输出审查
+                    </button>
+                    <button type="button" class="ac-tab" data-target="both" onclick="switchAuditTab('both')"
+                        style="flex:1;padding:0.5rem 0;border:none;background:none;font-size:0.85rem;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--text-secondary);">
+                        <i class="fas fa-exchange-alt" style="margin-right:0.3rem;"></i>双向审查
+                    </button>
+                </div>
+
+                <!-- 输入审查面板 -->
+                <div id="ac-input-panel" style="padding-top:0.8rem;">
+                    <div style="background:#f8f9fa;border-radius:8px;padding:0.8rem;margin-bottom:0.8rem;">
+                        <label style="display:flex;align-items:center;gap:0.4rem;font-weight:600;margin-bottom:0.5rem;">
+                            <input type="checkbox" id="ac-input-regex-enabled">
+                            <span style="color:#9b59b6;">①</span> 自定义正则规则
                         </label>
+                        <div id="ac-input-regex-detail" style="padding-left:1.2rem;">
+                            <div style="display:flex;align-items:center;gap:1rem;margin-bottom:0.5rem;">
+                                <label style="font-size:0.85rem;">命中行为：</label>
+                                <select id="ac-input-regex-action" class="form-control" style="width:auto;padding:0.2rem 0.5rem;">
+                                    <option value="enhance" selected>交大模型确认</option>
+                                    <option value="block">直接拦截</option>
+                                </select>
+                            </div>
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">
+                                <p style="font-size:0.8rem;color:#888;margin:0;">用自然语言描述后点 AI 生成，或直接写 <code>名称 | 正则</code></p>
+                                <button type="button" class="btn btn-outline btn-sm" onclick="aiGenerateRegex('input')" style="font-size:0.7rem;padding:0.1rem 0.4rem;">
+                                    <i class="fas fa-magic"></i> AI 生成
+                                </button>
+                            </div>
+                            <textarea id="ac-input-regex-rules" class="form-control" rows="3" placeholder="直接输入自然语言，如：&#10;禁止讨论竞品A、竞品B、竞品C&#10;检测手机号和身份证号&#10;——点击 AI 生成自动转为正则规则"></textarea>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label style="display:flex;align-items:center;gap:0.5rem;">
-                            <input type="checkbox" id="task-output-audit" checked> 输出审查
+                    <div style="background:#f8f9fa;border-radius:8px;padding:0.8rem;margin-bottom:0.8rem;">
+                        <label style="display:flex;align-items:center;gap:0.4rem;font-weight:600;">
+                            <input type="checkbox" id="ac-input-llm-enabled" checked>
+                            <span style="color:#27ae60;">②</span> 大模型语义审查
                         </label>
+                        <p style="font-size:0.8rem;color:#888;margin:0.3rem 0 0 1.2rem;">正则命中且行为为"交大模型确认"时，命中信息将注入大模型 prompt 做增强审查。</p>
                     </div>
-                    <div class="form-group">
-                        <label>拦截阈值</label>
-                        <input type="number" id="task-min-confidence" class="form-control" value="60" min="0" max="100">
+                    <div style="display:flex;align-items:center;gap:0.8rem;">
+                        <label style="font-size:0.85rem;font-weight:600;">最终拦截阈值：</label>
+                        <input type="number" id="ac-input-block-threshold" class="form-control" style="width:70px;padding:0.2rem 0.4rem;" value="60" min="0" max="100">
+                        <span style="font-size:0.8rem;color:#888;">大模型返回的 risk_score ≥ 此值则拦截</span>
                     </div>
                 </div>
-                <div class="form-group">
-                    <label>安全提示词（可选）</label>
-                    <textarea id="task-security-prompt" class="form-control" rows="3" placeholder="可选的安全策略提示词..."></textarea>
+
+                <!-- 输出审查面板（默认隐藏） -->
+                <div id="ac-output-panel" style="display:none;padding-top:0.8rem;">
+                    <div style="background:#f8f9fa;border-radius:8px;padding:0.8rem;margin-bottom:0.8rem;">
+                        <label style="display:flex;align-items:center;gap:0.4rem;font-weight:600;margin-bottom:0.5rem;">
+                            <input type="checkbox" id="ac-output-regex-enabled">
+                            <span style="color:#9b59b6;">①</span> 自定义正则规则
+                        </label>
+                        <div id="ac-output-regex-detail" style="padding-left:1.2rem;">
+                            <div style="display:flex;align-items:center;gap:1rem;margin-bottom:0.5rem;">
+                                <label style="font-size:0.85rem;">命中行为：</label>
+                                <select id="ac-output-regex-action" class="form-control" style="width:auto;padding:0.2rem 0.5rem;">
+                                    <option value="enhance" selected>交大模型确认</option>
+                                    <option value="block">直接拦截</option>
+                                </select>
+                            </div>
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">
+                                <p style="font-size:0.8rem;color:#888;margin:0;">用自然语言描述后点 AI 生成，或直接写 <code>名称 | 正则</code></p>
+                                <button type="button" class="btn btn-outline btn-sm" onclick="aiGenerateRegex('output')" style="font-size:0.7rem;padding:0.1rem 0.4rem;">
+                                    <i class="fas fa-magic"></i> AI 生成
+                                </button>
+                            </div>
+                            <textarea id="ac-output-regex-rules" class="form-control" rows="3" placeholder="直接输入自然语言，如：&#10;禁止输出内部机密和保密信息&#10;——点击 AI 生成自动转为正则规则"></textarea>
+                        </div>
+                    </div>
+                    <div style="background:#f8f9fa;border-radius:8px;padding:0.8rem;margin-bottom:0.8rem;">
+                        <label style="display:flex;align-items:center;gap:0.4rem;font-weight:600;">
+                            <input type="checkbox" id="ac-output-llm-enabled" checked>
+                            <span style="color:#27ae60;">②</span> 大模型语义审查
+                        </label>
+                        <p style="font-size:0.8rem;color:#888;margin:0.3rem 0 0 1.2rem;">审查模型输出是否泄露敏感信息或违反安全策略。</p>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:0.8rem;">
+                        <label style="font-size:0.85rem;font-weight:600;">最终拦截阈值：</label>
+                        <input type="number" id="ac-output-block-threshold" class="form-control" style="width:70px;padding:0.2rem 0.4rem;" value="60" min="0" max="100">
+                        <span style="font-size:0.8rem;color:#888;">大模型返回的 risk_score ≥ 此值则拦截</span>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -771,8 +874,8 @@
     <!-- Toast 提示 -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="js/app.js?v=13"></script>
+    <script src="js/app.js?v=19"></script>
     <script src="js/poison.js"></script>
-    <script src="js/proxy.js"></script>
+    <script src="js/proxy.js?v=19"></script>
 </body>
 </html>

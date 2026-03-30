@@ -17,8 +17,13 @@ build/
 *.docx
 *.txt
 *.pdf
+研究背景*.html
 图表/
 reports/
+
+# 工具脚本（非项目核心代码）
+docx_content.py
+MCPScan/
 
 # 运行时数据
 *.db

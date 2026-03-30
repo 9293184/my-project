@@ -17,9 +17,12 @@ import uuid
 import logging
 from typing import Dict, Any, Optional
 
+import re as _re
+
 import requests
 
 from .audit import AuditEngine, AuditResult
+from .rule_engine import RuleEngine
 from .logger import ProxyLogEntry, save_log
 
 logger = logging.getLogger(__name__)
@@ -79,6 +82,158 @@ class ForwardResult:
 
 # ─── 核心透传转发 ─────────────────────────────────────
 
+def _match_custom_regex(text: str, rules: list) -> list:
+    """对文本执行自定义正则规则匹配
+
+    Args:
+        text: 待匹配文本
+        rules: 自定义规则列表，每项为 {"pattern": "正则表达式", "label": "规则名称"}
+
+    Returns:
+        命中列表，每项为 {"pattern": "...", "label": "...", "matched": "..."}
+    """
+    hits = []
+    for rule in rules:
+        pattern = rule.get("pattern", "")
+        label = rule.get("label", "未命名规则")
+        if not pattern:
+            continue
+        try:
+            m = _re.search(pattern, text, _re.IGNORECASE)
+            if m:
+                matched = m.group()
+                if len(matched) > 200:
+                    matched = matched[:200] + "…"
+                hits.append({"pattern": pattern, "label": label, "matched": matched})
+        except _re.error as e:
+            logger.warning(f"[proxy] 自定义正则编译失败「{label}」: {e}")
+    return hits
+
+
+def _run_audit_pipeline(
+    text: str,
+    direction: str,
+    side_cfg: dict,
+    audit_engine: Optional[AuditEngine],
+    security_prompt: str,
+    context_summary: str,
+    request_id: str,
+) -> Optional[AuditResult]:
+    """执行单侧（输入/输出）的多层审查流水线
+
+    流程：
+      1. 内置规则引擎（如启用）
+      2. 自定义正则（如启用）
+      3. 大模型 judge（如启用）
+
+    各层的 action 决定行为：
+      - "block": 命中后直接产生不安全结果
+      - "enhance": 命中后将信息传给大模型做增强确认
+
+    Returns:
+        AuditResult 或 None（全部跳过时）
+    """
+    if not side_cfg.get("enabled", True):
+        return None
+
+    block_threshold = side_cfg.get("block_threshold", 60)
+    builtin_cfg = side_cfg.get("builtin_rules", {})
+    custom_cfg = side_cfg.get("custom_regex", {})
+    llm_cfg = side_cfg.get("llm_judge", {})
+
+    all_regex_hints = []  # 收集所有 "enhance" 模式的命中信息
+    blocked_result = None  # 被 "block" 模式直接拦截的结果
+
+    # ── 第一层：内置规则引擎（规则不可更改，始终使用全部分类） ──
+    if builtin_cfg.get("enabled", False):
+        engine = RuleEngine()
+        rule_result = engine.scan(text)
+
+        if rule_result.hits:
+            action = builtin_cfg.get("action", "block")
+            logger.info(
+                f"[proxy:{request_id}] {direction}内置规则命中 {len(rule_result.hits)} 条 "
+                f"(action={action}): {rule_result.reason[:80]}"
+            )
+            if action == "block" and not rule_result.safe:
+                blocked_result = AuditResult(
+                    safe=False,
+                    risk_score=rule_result.risk_score,
+                    reason=f"[内置规则] {rule_result.reason}",
+                    summary=f"内置规则引擎拦截：{rule_result.hits[0].pattern_name}",
+                )
+            elif action == "enhance":
+                for h in rule_result.hits:
+                    all_regex_hints.append({
+                        "label": f"[内置]{h.pattern_name}",
+                        "pattern": "",
+                        "matched": h.evidence,
+                    })
+
+    # 如果已被 block，直接返回
+    if blocked_result:
+        return blocked_result
+
+    # ── 第二层：自定义正则 ──
+    if custom_cfg.get("enabled", False):
+        rules = custom_cfg.get("rules", [])
+        if rules:
+            regex_hits = _match_custom_regex(text, rules)
+            if regex_hits:
+                action = custom_cfg.get("action", "enhance")
+                logger.info(
+                    f"[proxy:{request_id}] {direction}自定义正则命中 {len(regex_hits)} 条 "
+                    f"(action={action})"
+                )
+                if action == "block":
+                    labels = ", ".join(h["label"] for h in regex_hits)
+                    blocked_result = AuditResult(
+                        safe=False,
+                        risk_score=80,
+                        reason=f"[自定义正则] 命中: {labels}",
+                        summary=f"自定义正则直接拦截：{labels[:60]}",
+                    )
+                elif action == "enhance":
+                    all_regex_hints.extend(regex_hits)
+
+    if blocked_result:
+        return blocked_result
+
+    # ── 第三层：大模型 judge ──
+    if llm_cfg.get("enabled", False) and audit_engine:
+        if all_regex_hints:
+            logger.info(
+                f"[proxy:{request_id}] {direction}规则命中 {len(all_regex_hints)} 条，"
+                f"交由大模型增强确认..."
+            )
+            if direction == "输入":
+                audit_result = audit_engine.audit_input_with_regex_hint(
+                    text, all_regex_hints, security_prompt, context_summary
+                )
+            else:
+                audit_result = audit_engine.audit_output(text, security_prompt, context_summary)
+        else:
+            logger.info(f"[proxy:{request_id}] {direction}大模型审查中...")
+            if direction == "输入":
+                audit_result = audit_engine.audit_input(text, security_prompt, context_summary)
+            else:
+                audit_result = audit_engine.audit_output(text, security_prompt, context_summary)
+        return audit_result
+
+    # 大模型未启用但有 enhance 命中 → 作为风险返回
+    if all_regex_hints:
+        labels = ", ".join(h["label"] for h in all_regex_hints)
+        return AuditResult(
+            safe=False,
+            risk_score=50,
+            reason=f"[规则命中] {labels}（大模型未启用，无法二次确认）",
+            summary=f"规则命中但大模型未启用: {labels[:60]}",
+        )
+
+    # 所有策略层均跳过
+    return AuditResult(safe=True, risk_score=0, reason="审查通过")
+
+
 def forward_chat(
     upstream_url: str,
     body: Dict[str, Any],
@@ -86,10 +241,8 @@ def forward_chat(
     audit_engine: Optional[AuditEngine] = None,
     security_prompt: str = "",
     context_summary: str = "",
-    enable_input_audit: bool = True,
-    enable_output_audit: bool = True,
+    audit_config: dict = None,
     client_ip: str = "",
-    min_confidence_threshold: int = 60,
     max_retries: int = MAX_RETRY_ATTEMPTS,
     timeout: int = FETCH_TIMEOUT_S,
 ) -> ForwardResult:
@@ -97,16 +250,14 @@ def forward_chat(
     透明代理转发 — 原样转发到用户指定的上游 URL
 
     Args:
-        upstream_url: 上游 API 地址（如 https://dashscope.aliyuncs.com/compatible-mode/v1）
-        body: 请求体，原样转发（OpenAI 兼容格式）
-        api_key: 上游 API Key（可选，Ollama 本地不需要）
-        audit_engine: 审查引擎实例（None = 跳过审查）
+        upstream_url: 上游 API 地址
+        body: 请求体（OpenAI 兼容格式）
+        api_key: 上游 API Key
+        audit_engine: 大模型审查引擎实例
         security_prompt: 安全策略文本
         context_summary: 历史对话摘要
-        enable_input_audit: 是否启用输入审查
-        enable_output_audit: 是否启用输出审查
+        audit_config: 审查策略配置（单方向，含 direction 字段）
         client_ip: 客户端IP
-        min_confidence_threshold: 风险拦截阈值（0-100）
         max_retries: 最大重试次数
         timeout: 单次请求超时（秒）
     """
@@ -128,13 +279,23 @@ def forward_chat(
                 )
             break
 
-    # ─── 2. 输入审查 ───
-    if audit_engine and enable_input_audit and user_content:
-        logger.info(f"[proxy:{request_id}] 输入审查中...")
-        input_audit = audit_engine.audit_input(user_content, security_prompt, context_summary)
+    # ─── 2. 输入审查（direction=input 或 both 时执行） ───
+    cfg = audit_config or {}
+    audit_direction = cfg.get("direction", "input")
+    if audit_direction in ("input", "both") and user_content and cfg.get("enabled", True):
+        input_audit = _run_audit_pipeline(
+            text=user_content,
+            direction="输入",
+            side_cfg=cfg,
+            audit_engine=audit_engine,
+            security_prompt=security_prompt,
+            context_summary=context_summary,
+            request_id=request_id,
+        )
         result.input_audit = input_audit
 
-        if not input_audit.safe and input_audit.risk_score >= min_confidence_threshold:
+        block_threshold = cfg.get("block_threshold", 60)
+        if input_audit and not input_audit.safe and input_audit.risk_score >= block_threshold:
             result.blocked = True
             result.block_type = "input"
             result.status_code = 200
@@ -218,13 +379,21 @@ def forward_chat(
         _save_forward_log(request_id, url, model, body, None, result, client_ip)
         return result
 
-    # ─── 5. 输出审查 ───
-    if audit_engine and enable_output_audit and result.response_text:
-        logger.info(f"[proxy:{request_id}] 输出审查中...")
-        output_audit = audit_engine.audit_output(result.response_text, security_prompt, context_summary)
+    # ─── 5. 输出审查（direction=output 或 both 时执行） ───
+    if audit_direction in ("output", "both") and result.response_text and cfg.get("enabled", True):
+        output_audit = _run_audit_pipeline(
+            text=result.response_text,
+            direction="输出",
+            side_cfg=cfg,
+            audit_engine=audit_engine,
+            security_prompt=security_prompt,
+            context_summary=context_summary,
+            request_id=request_id,
+        )
         result.output_audit = output_audit
 
-        if not output_audit.safe and output_audit.risk_score >= min_confidence_threshold:
+        block_threshold = cfg.get("block_threshold", 60)
+        if output_audit and not output_audit.safe and output_audit.risk_score >= block_threshold:
             result.blocked = True
             result.block_type = "output"
             logger.warning(

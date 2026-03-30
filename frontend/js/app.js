@@ -1263,11 +1263,15 @@ function clearAllData() {
 
 // ========== 弹窗控制 ==========
 function openModal(modalId) {
-    document.getElementById(modalId).classList.add('active');
+    const el = document.getElementById(modalId);
+    el.style.display = '';
+    el.classList.add('active');
 }
 
 function closeModal(modalId) {
-    document.getElementById(modalId).classList.remove('active');
+    const el = document.getElementById(modalId);
+    el.classList.remove('active');
+    el.style.display = 'none';
 }
 
 // ========== Toast 提示 ==========
