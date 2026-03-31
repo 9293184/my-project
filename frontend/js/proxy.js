@@ -132,11 +132,15 @@ function renderTasksTable() {
         const dirColor = colorMap[ac.direction] || '#3498db';
         const layers = _strategyBadge(ac);
         const threshold = ac.block_threshold || t.min_confidence || 60;
+        const proxyAddr = `${window.location.origin}/proxy/${t.proxy_id}/v1`;
         return `<tr>
             <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:3px;font-size:0.85rem;">${t.proxy_id}</code></td>
             <td>${escapeHtml(t.name)}</td>
-            <td title="${escapeHtml(t.upstream_url)}" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(t.upstream_url)}</td>
-            <td>${escapeHtml(t.model || '-')}</td>
+            <td title="${escapeHtml(t.upstream_url)}" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(t.upstream_url)}</td>
+            <td title="${proxyAddr}" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:var(--primary-color);"
+                onclick="navigator.clipboard.writeText('${proxyAddr}');showToast('已复制','success')">
+                <i class="fas fa-link" style="font-size:0.7rem;margin-right:2px;"></i>${proxyAddr}
+            </td>
             <td><span style="color:${dirColor};font-weight:600;">${direction}</span> ${layers}</td>
             <td>${threshold}</td>
             <td style="white-space:nowrap;">
@@ -207,16 +211,34 @@ function _collectSideConfig(prefix) {
     };
 }
 
+function copyProxyUrl() {
+    const input = document.getElementById('task-proxy-url-display');
+    navigator.clipboard.writeText(input.value).then(() => {
+        showToast('代理地址已复制', 'success');
+    }).catch(() => {
+        input.select();
+        document.execCommand('copy');
+        showToast('代理地址已复制', 'success');
+    });
+}
+
 function openTaskModal(task) {
     document.getElementById('task-edit-id').value = task ? task.proxy_id : '';
     document.getElementById('task-modal-title').textContent = task ? '编辑代理项目' : '新建代理项目';
     document.getElementById('task-name').value = task ? task.name : '';
     document.getElementById('task-upstream-url').value = task ? task.upstream_url : '';
-    document.getElementById('task-api-key').value = '';
-    if (task && task.api_key) document.getElementById('task-api-key').placeholder = '已设置（留空不修改）';
-    else document.getElementById('task-api-key').placeholder = 'sk-xxxx...';
     document.getElementById('task-model').value = task ? task.model : '';
     document.getElementById('task-security-prompt').value = task ? (task.security_prompt || '') : '';
+
+    // 编辑模式下显示透明代理地址
+    const proxyUrlGroup = document.getElementById('task-proxy-url-group');
+    if (task && task.proxy_id) {
+        const baseUrl = window.location.origin;
+        document.getElementById('task-proxy-url-display').value = `${baseUrl}/proxy/${task.proxy_id}/v1`;
+        proxyUrlGroup.style.display = '';
+    } else {
+        proxyUrlGroup.style.display = 'none';
+    }
 
     // 加载 audit_config
     const cfg = (task && task.audit_config) || null;
@@ -269,9 +291,6 @@ async function saveTask() {
         security_prompt: document.getElementById('task-security-prompt').value.trim(),
         audit_config: auditConfig,
     };
-    const apiKey = document.getElementById('task-api-key').value.trim();
-    if (apiKey) body.api_key = apiKey;
-
     try {
         const url = editId
             ? `${PROXY_API}/proxy/v1/tasks/${editId}`

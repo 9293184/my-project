@@ -13,11 +13,14 @@ dist/
 build/
 
 # 文档和图表（不上传）
-*.md
 *.docx
 *.txt
+!requirements.txt
 *.pdf
 研究背景*.html
+项目简介.md
+项目总览.md
+研究背景_完整版*.md
 图表/
 reports/
 

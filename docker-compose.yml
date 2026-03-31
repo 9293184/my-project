@@ -16,7 +16,7 @@ services:
       - ./reports:/app/reports
       - ollama_data:/root/.ollama
     environment:
-      - OLLAMA_MODEL=qwen3-defender
+      - OLLAMA_MODEL=huihui_ai/qwen3-abliterated:8b
       - PYTHONUNBUFFERED=1
     deploy:
       resources:

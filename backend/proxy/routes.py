@@ -30,7 +30,7 @@ def init_audit_engine(judge_url: str = None, judge_model: str = None,
     global _audit_engine
     _audit_engine = AuditEngine(
         judge_url=judge_url or "http://localhost:11434/v1",
-        judge_model=judge_model or "qwen2.5:latest",
+        judge_model=judge_model or "huihui_ai/qwen3-abliterated:8b",
         judge_key=judge_key,
     )
     logger.info(
@@ -54,72 +54,39 @@ def init_audit_engine(judge_url: str = None, judge_model: str = None,
 #   "_min_confidence": 60,
 # }
 
-@bp.post("/proxy/v1/chat/completions")
-def proxy_chat():
-    data = request.json or {}
-
-    # 提取并剥离 _proxy_id
-    proxy_id = data.pop("_proxy_id", None)
-    task_cfg = None
-    if proxy_id:
-        task_cfg = get_task(proxy_id)
-        if not task_cfg:
-            return jsonify({
-                "error": {"message": f"代理项目不存在: {proxy_id}", "type": "invalid_request_error"}
-            }), 404
-
-    # 提取上游地址：优先 body > task配置 > header
-    upstream_url = (
-        data.pop("_upstream_url", None)
-        or (task_cfg["upstream_url"] if task_cfg else None)
-        or request.headers.get("X-Upstream-Url")
-        or request.headers.get("x-upstream-url")
-    )
-    if not upstream_url:
-        return jsonify({
-            "error": {"message": "需要指定上游地址（_proxy_id 或 _upstream_url）", "type": "invalid_request_error"}
-        }), 400
-
-    # 提取API Key：优先 body > task配置 > header
-    api_key = data.pop("_api_key", None)
-    if not api_key and task_cfg:
-        api_key = task_cfg.get("api_key") or None
-    if not api_key:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            api_key = auth_header[7:].strip()
+def _do_proxy_forward(task_cfg, data):
+    """核心转发逻辑 — 被透明路由和旧路由共用"""
+    upstream_url = task_cfg["upstream_url"]
 
     # model: 优先 body > task配置
-    if not data.get("model") and task_cfg and task_cfg.get("model"):
+    if not data.get("model") and task_cfg.get("model"):
         data["model"] = task_cfg["model"]
 
-    # 提取代理扩展参数
-    security_prompt = data.pop("_security_prompt", task_cfg.get("security_prompt", "") if task_cfg else "")
-    context_summary = data.pop("_context_summary", "")
-    audit_config = task_cfg.get("audit_config") if task_cfg else None
-    # 剥离旧的扩展字段（兼容旧调用方）
-    data.pop("_enable_input_audit", None)
-    data.pop("_enable_output_audit", None)
-    data.pop("_min_confidence", None)
+    security_prompt = task_cfg.get("security_prompt", "")
+    audit_config = task_cfg.get("audit_config")
 
-    if not data.get("model") or not data.get("messages"):
+    if not data.get("messages"):
         return jsonify({
-            "error": {"message": "需要 model 和 messages 字段", "type": "invalid_request_error"}
+            "error": {"message": "需要 messages 字段", "type": "invalid_request_error"}
         }), 400
+
+    # 收集客户端原始请求头用于透传
+    client_headers = dict(request.headers)
 
     # 透传转发
     result = forward_chat(
         upstream_url=upstream_url,
         body=data,
-        api_key=api_key,
+        client_headers=client_headers,
+        api_key=task_cfg.get("api_key") or None,
         audit_engine=_audit_engine,
         security_prompt=security_prompt,
-        context_summary=context_summary,
+        context_summary=data.pop("_context_summary", ""),
         audit_config=audit_config,
         client_ip=request.remote_addr or "",
     )
 
-    # 构建响应——不包含 proxy_id，直接转发
+    # 构建响应
     if result.blocked:
         return jsonify({
             "blocked": True,
@@ -136,17 +103,78 @@ def proxy_chat():
             "latency_ms": result.latency_ms,
         }), status
 
-    # 成功：返回上游原始响应 + 代理元信息（不含 proxy_id）
+    # 成功：返回上游原始响应（不注入额外字段，保持透明）
     response = result.response_data or {}
-    response["_proxy"] = {
-        "upstream_url": upstream_url,
-        "model": data.get("model"),
-        "latency_ms": result.latency_ms,
-        "tokens": result.usage,
-        "input_audit": result.input_audit.to_dict() if result.input_audit else None,
-        "output_audit": result.output_audit.to_dict() if result.output_audit else None,
-    }
     return jsonify(response)
+
+
+# ─── 透明代理路由（方案B）────────────────────────────
+# 客户端只需把 API 地址改为: http://代理服务器:端口/proxy/<proxy_id>/v1
+# 请求体和请求头完全不修改，代理从 URL 路径中提取 proxy_id
+#
+# 示例:
+#   原来: POST https://api.openai.com/v1/chat/completions
+#   改为: POST http://localhost:5001/proxy/PX-a1b2c3d4/v1/chat/completions
+
+@bp.post("/proxy/<proxy_id>/v1/chat/completions")
+def proxy_chat_transparent(proxy_id):
+    """透明代理 — 从 URL 路径提取 proxy_id，请求体/头完全不动"""
+    task_cfg = get_task(proxy_id)
+    if not task_cfg:
+        return jsonify({
+            "error": {"message": f"代理项目不存在: {proxy_id}", "type": "invalid_request_error"}
+        }), 404
+
+    data = request.json or {}
+    return _do_proxy_forward(task_cfg, data)
+
+
+# ─── 旧路由（向下兼容）──────────────────────────────
+# 旧的方式：body 里带 _proxy_id 字段
+
+@bp.post("/proxy/v1/chat/completions")
+def proxy_chat():
+    data = request.json or {}
+
+    # 提取并剥离 _proxy_id
+    proxy_id = data.pop("_proxy_id", None)
+    task_cfg = None
+    if proxy_id:
+        task_cfg = get_task(proxy_id)
+        if not task_cfg:
+            return jsonify({
+                "error": {"message": f"代理项目不存在: {proxy_id}", "type": "invalid_request_error"}
+            }), 404
+
+    if not task_cfg:
+        # 无 proxy_id 时尝试从 body/_upstream_url 或 header 获取上游地址（兼容旧调用）
+        upstream_url = (
+            data.pop("_upstream_url", None)
+            or request.headers.get("X-Upstream-Url")
+            or request.headers.get("x-upstream-url")
+        )
+        if not upstream_url:
+            return jsonify({
+                "error": {"message": "需要指定 _proxy_id 或 _upstream_url", "type": "invalid_request_error"}
+            }), 400
+        # 构造临时 task_cfg
+        task_cfg = {
+            "upstream_url": upstream_url,
+            "api_key": data.pop("_api_key", None) or "",
+            "model": "",
+            "security_prompt": data.pop("_security_prompt", ""),
+            "audit_config": None,
+        }
+
+    # 剥离旧的扩展字段
+    data.pop("_upstream_url", None)
+    data.pop("_api_key", None)
+    data.pop("_security_prompt", None)
+    data.pop("_enable_input_audit", None)
+    data.pop("_enable_output_audit", None)
+    data.pop("_min_confidence", None)
+
+    return _do_proxy_forward(task_cfg, data)
 
 
 # ─── GET /proxy/v1/config ─────────────────────────────

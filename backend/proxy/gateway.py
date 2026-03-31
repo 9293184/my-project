@@ -237,6 +237,7 @@ def _run_audit_pipeline(
 def forward_chat(
     upstream_url: str,
     body: Dict[str, Any],
+    client_headers: Dict[str, str] = None,
     api_key: str = None,
     audit_engine: Optional[AuditEngine] = None,
     security_prompt: str = "",
@@ -252,7 +253,8 @@ def forward_chat(
     Args:
         upstream_url: 上游 API 地址
         body: 请求体（OpenAI 兼容格式）
-        api_key: 上游 API Key
+        client_headers: 客户端原始请求头（透传给上游）
+        api_key: 上游 API Key（仅在 client_headers 无 Authorization 时使用）
         audit_engine: 大模型审查引擎实例
         security_prompt: 安全策略文本
         context_summary: 历史对话摘要
@@ -307,9 +309,20 @@ def forward_chat(
             _save_forward_log(request_id, url, model, body, None, result, client_ip)
             return result
 
-    # ─── 3. 原样转发到上游 ───
-    headers = {"Content-Type": "application/json"}
-    if api_key:
+    # ─── 3. 原样转发到上游（透传客户端请求头） ───
+    headers = {}
+    if client_headers:
+        # 透传客户端原始请求头，排除 hop-by-hop 头和 Host
+        _skip = {"host", "content-length", "transfer-encoding", "connection", "keep-alive"}
+        for k, v in client_headers.items():
+            if k.lower() not in _skip:
+                headers[k] = v
+    # 确保 Content-Type 存在
+    if "Content-Type" not in headers and "content-type" not in headers:
+        headers["Content-Type"] = "application/json"
+    # 仅当客户端未带 Authorization 且代理项目配了 api_key 时才补充（向下兼容）
+    has_auth = any(k.lower() == "authorization" for k in headers)
+    if not has_auth and api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
     last_error = ""

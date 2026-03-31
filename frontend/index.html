@@ -569,7 +569,7 @@
                                         <th>代理号</th>
                                         <th>名称</th>
                                         <th>上游地址</th>
-                                        <th>模型</th>
+                                        <th>代理地址</th>
                                         <th>审查方向</th>
                                         <th>阈值</th>
                                         <th>操作</th>
@@ -736,15 +736,20 @@
                     <label>上游 API 地址 <span class="required">*</span></label>
                     <input type="text" id="task-upstream-url" class="form-control" placeholder="如：https://dashscope.aliyuncs.com/compatible-mode/v1">
                 </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
-                    <div class="form-group">
-                        <label>API Key（可选）</label>
-                        <input type="password" id="task-api-key" class="form-control" placeholder="sk-xxxx...">
+                <div class="form-group" id="task-proxy-url-group" style="display:none;">
+                    <label>透明代理地址（客户端使用此地址替代原 API 地址）</label>
+                    <div style="display:flex;gap:0.5rem;align-items:center;">
+                        <input type="text" id="task-proxy-url-display" class="form-control" readonly
+                            style="background:#f8f9fa;font-family:monospace;font-size:0.85rem;">
+                        <button type="button" class="btn btn-outline btn-sm" onclick="copyProxyUrl()" title="复制">
+                            <i class="fas fa-copy"></i>
+                        </button>
                     </div>
-                    <div class="form-group">
-                        <label>默认模型</label>
-                        <input type="text" id="task-model" class="form-control" placeholder="如：qwen-plus">
-                    </div>
+                    <small style="color:var(--text-secondary);">客户端请求头和请求体完全不需要修改，代理会原样透传</small>
+                </div>
+                <div class="form-group">
+                    <label>默认模型（可选，客户端未指定时使用）</label>
+                    <input type="text" id="task-model" class="form-control" placeholder="如：qwen-plus">
                 </div>
                 <div class="form-group">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">
@@ -874,8 +879,8 @@
     <!-- Toast 提示 -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="js/app.js?v=19"></script>
+    <script src="js/app.js?v=20"></script>
     <script src="js/poison.js"></script>
-    <script src="js/proxy.js?v=19"></script>
+    <script src="js/proxy.js?v=20"></script>
 </body>
 </html>

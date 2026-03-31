@@ -65,7 +65,7 @@ def create_app() -> Flask:
             judge_url, judge_model, judge_key = get_judge_config(cursor)
         init_audit_engine(
             judge_url=judge_url or 'http://localhost:11434/v1',
-            judge_model=judge_model or 'qwen2.5:latest',
+            judge_model=judge_model or 'huihui_ai/qwen3-abliterated:8b',
             judge_key=judge_key,
         )
     except Exception as e:
