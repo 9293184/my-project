@@ -97,7 +97,7 @@ python run_modular.py
 
 ### 4. 接入客户端
 
-将客户端的 API base URL 替换为代理地址即可，**无需修改任何请求头或请求体**：
+将客户端的 API base URL 替换为代理地址即可，**请求体无需任何修改**：
 
 ```
 # 原始配置
@@ -112,6 +112,19 @@ API_BASE_URL=http://代理服务器:5001/proxy/PX-xxxx/v1
 - 对输入/输出执行安全审查
 - 记录完整日志
 - 将请求转发到上游大模型
+
+### 5. 用户级管控（可选）
+
+如需启用用户级别的访问记录、统计和封禁功能，客户端在请求时携带自定义头部：
+
+```
+X-Proxy-User: alice
+```
+
+- 网关提取该字段用于用户身份识别、日志记录、封禁检查和对话历史隔离
+- 转发前自动剥离该头部，上游 API 不会收到
+- 请求体中的 `user` 字段保持原样透传给上游，与审查用户身份互不影响
+- 若未携带该头部，系统跳过用户级管控，仅执行代理级审查和转发
 
 ## 架构概览
 
@@ -148,7 +161,7 @@ API_BASE_URL=http://代理服务器:5001/proxy/PX-xxxx/v1
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/proxy/<项目ID>/v1/chat/completions` | 透明代理转发（零修改） |
+| POST | `/proxy/<项目ID>/v1/chat/completions` | 透明代理转发（可选头: `X-Proxy-User`） |
 | GET/POST/PUT/DELETE | `/proxy/v1/tasks` | 代理项目管理 |
 | GET | `/proxy/v1/logs` | 查询日志 |
 | GET | `/proxy/v1/logs/stats` | 日志统计 |

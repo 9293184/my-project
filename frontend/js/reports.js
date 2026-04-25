@@ -1,176 +1,166 @@
 /**
- * 报告管理
+ * 日志审计 — 系统日志查看与导出
  */
 
-let reportCurrentPage = 1;
-const reportPageSize = 20;
+const AUDIT_API = 'http://127.0.0.1:5001';
+let _auditLogsCache = [];
 
-// 当前查看详情的任务ID（用于导出）
-let _currentEvalTaskId = null;
-
-// ========== 加载报告列表 ==========
-async function loadReports() {
-    const taskId = document.getElementById('report-filter-task')?.value || '';
-    const params = new URLSearchParams({
-        page: reportCurrentPage,
-        page_size: reportPageSize,
-    });
-    if (taskId) params.append('task_id', taskId);
-
+// ========== 加载统计概览 ==========
+async function loadAuditStats() {
     try {
-        const result = await API.request(`/evaluation/reports?${params}`);
-        renderReportsTable(result.data, result.total);
-    } catch (error) {
-        showToast('加载报告列表失败: ' + error.message, 'error');
+        const resp = await fetch(`${AUDIT_API}/proxy/v1/logs/stats`);
+        const data = await resp.json();
+        if (data.success) {
+            document.getElementById('audit-stat-total').textContent = data.total_requests || 0;
+            document.getElementById('audit-stat-blocked').textContent = (data.blocked_input || 0) + (data.blocked_output || 0);
+            document.getElementById('audit-stat-tokens').textContent = _formatNumber(data.total_tokens || 0);
+            document.getElementById('audit-stat-latency').textContent = (data.avg_latency_ms || 0) + 'ms';
+        }
+    } catch (e) {
+        console.error('加载统计失败:', e);
     }
 }
 
-// ========== 渲染报告表格 ==========
-function renderReportsTable(reports, total) {
-    const tbody = document.getElementById('reports-table-body');
-    if (!reports || reports.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #999;">暂无报告</td></tr>';
-        document.getElementById('reports-pagination').innerHTML = '';
+// ========== 加载日志列表 ==========
+async function loadAuditLogs() {
+    const status = document.getElementById('audit-filter-status').value;
+    const startDate = document.getElementById('audit-filter-start').value;
+    const endDate = document.getElementById('audit-filter-end').value;
+    const limit = parseInt(document.getElementById('audit-filter-limit').value) || 100;
+
+    const params = new URLSearchParams({ limit });
+    if (startDate) params.append('start', startDate + 'T00:00:00');
+    if (endDate) params.append('end', endDate + 'T23:59:59');
+
+    const tbody = document.getElementById('audit-logs-table');
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:2rem;"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr>';
+
+    try {
+        const resp = await fetch(`${AUDIT_API}/proxy/v1/logs?${params}`);
+        const data = await resp.json();
+        if (!data.success || !data.logs) throw new Error('查询失败');
+
+        let logs = data.logs;
+
+        // 前端筛选状态
+        if (status === 'blocked') {
+            logs = logs.filter(l => l.input_audit_safe === 0 || l.output_audit_safe === 0);
+        } else if (status === 'error') {
+            logs = logs.filter(l => l.status_code >= 400);
+        } else if (status === 'success') {
+            logs = logs.filter(l => l.status_code >= 200 && l.status_code < 400 && l.input_audit_safe !== 0);
+        }
+
+        _auditLogsCache = logs;
+        _renderAuditTable(logs);
+        loadAuditStats();
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#e74c3c;padding:2rem;">加载失败: ${escapeHtml(e.message)}</td></tr>`;
+    }
+}
+
+function _renderAuditTable(logs) {
+    const tbody = document.getElementById('audit-logs-table');
+    if (!logs || logs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999;padding:2rem;">无匹配日志</td></tr>';
+        document.getElementById('audit-logs-count').textContent = '';
         return;
     }
 
-    tbody.innerHTML = reports.map(r => {
-        const fmtBadge = r.report_format === 'html'
-            ? '<span class="badge" style="background:#3498db;color:#fff;">HTML</span>'
-            : '<span class="badge" style="background:#27ae60;color:#fff;">JSON</span>';
-        const sizeStr = formatFileSize(r.file_size || 0);
-        return `
-            <tr>
-                <td>${r.id}</td>
-                <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                    title="${escapeHtml(r.report_name || '')}">${escapeHtml(r.report_name || '')}</td>
-                <td>${escapeHtml(r.task_name || '-')}</td>
-                <td>${fmtBadge}</td>
-                <td>${sizeStr}</td>
-                <td>${r.created_at || '-'}</td>
-                <td>
-                    <div style="display: flex; gap: 0.25rem;">
-                        <button class="btn btn-sm btn-outline" onclick="previewReport(${r.id})" title="预览">
-                            <i class="fas fa-eye"></i>
-                        </button>
-                        <button class="btn btn-sm btn-primary" onclick="downloadReport(${r.id})" title="下载">
-                            <i class="fas fa-download"></i>
-                        </button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteReport(${r.id})" title="删除">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    </div>
-                </td>
-            </tr>`;
+    tbody.innerHTML = logs.map((log, idx) => {
+        const time = (log.timestamp || '').replace('T', ' ').substring(0, 19);
+        const sc = log.status_code || 0;
+        const statusBadge = sc >= 200 && sc < 400
+            ? `<span class="log-badge log-badge-ok">${sc}</span>`
+            : sc === 403
+                ? `<span class="log-badge log-badge-blocked">${sc} 拦截</span>`
+                : `<span class="log-badge log-badge-error">${sc}</span>`;
+
+        const inputBadge = log.input_audit_safe === 1
+            ? '<span style="color:#27ae60;">✅安全</span>'
+            : log.input_audit_safe === 0
+                ? '<span style="color:#e74c3c;">🚫风险</span>'
+                : '<span style="color:#999;">-</span>';
+
+        const outputBadge = log.output_audit_safe === 1
+            ? '<span style="color:#27ae60;">✅安全</span>'
+            : log.output_audit_safe === 0
+                ? '<span style="color:#e74c3c;">🚫风险</span>'
+                : '<span style="color:#999;">-</span>';
+
+        return `<tr style="cursor:pointer;" onclick="showLogDetail(_auditLogsCache[${idx}])">
+            <td>${log.id || idx + 1}</td>
+            <td style="white-space:nowrap;">${time}</td>
+            <td>${escapeHtml(log.model || '-')}</td>
+            <td>${statusBadge}</td>
+            <td>${inputBadge}</td>
+            <td>${outputBadge}</td>
+            <td>${log.total_tokens || 0}</td>
+            <td>${log.latency_ms || 0}ms</td>
+            <td>
+                <button class="btn btn-sm btn-outline" onclick="event.stopPropagation();showLogDetail(_auditLogsCache[${idx}])" title="详情">
+                    <i class="fas fa-eye"></i>
+                </button>
+            </td>
+        </tr>`;
     }).join('');
 
-    // 分页
-    const totalPages = Math.ceil(total / reportPageSize);
-    const pagination = document.getElementById('reports-pagination');
-    if (totalPages <= 1) {
-        pagination.innerHTML = '';
+    document.getElementById('audit-logs-count').textContent = `共 ${logs.length} 条日志`;
+}
+
+// ========== 导出日志 ==========
+function exportAuditLogs(format) {
+    if (!_auditLogsCache || _auditLogsCache.length === 0) {
+        showToast('暂无日志数据，请先查询', 'warning');
         return;
     }
-    let html = '';
-    if (reportCurrentPage > 1) {
-        html += `<button class="btn btn-sm btn-outline" onclick="reportGoPage(${reportCurrentPage - 1})">上一页</button>`;
-    }
-    html += `<span style="padding: 0 0.5rem; line-height: 2;">第 ${reportCurrentPage}/${totalPages} 页（共 ${total} 条）</span>`;
-    if (reportCurrentPage < totalPages) {
-        html += `<button class="btn btn-sm btn-outline" onclick="reportGoPage(${reportCurrentPage + 1})">下一页</button>`;
-    }
-    pagination.innerHTML = html;
-}
 
-function reportGoPage(page) {
-    reportCurrentPage = page;
-    loadReports();
-}
+    const now = new Date().toISOString().slice(0, 10);
 
-// ========== 填充任务筛选下拉 ==========
-async function populateReportTaskFilter() {
-    try {
-        const result = await API.request('/evaluation/tasks?page_size=100');
-        const select = document.getElementById('report-filter-task');
-        if (!select) return;
-        const current = select.value;
-        select.innerHTML = '<option value="">全部任务</option>';
-        (result.data || []).forEach(t => {
-            select.innerHTML += `<option value="${t.id}">${escapeHtml(t.task_name)}</option>`;
-        });
-        select.value = current;
-    } catch (e) {
-        // 静默失败
+    if (format === 'json') {
+        const blob = new Blob([JSON.stringify(_auditLogsCache, null, 2)], { type: 'application/json' });
+        _downloadBlob(blob, `audit-logs-${now}.json`);
+        showToast(`已导出 ${_auditLogsCache.length} 条日志 (JSON)`, 'success');
+    } else if (format === 'csv') {
+        const headers = ['id', 'timestamp', 'request_id', 'model', 'url', 'status_code',
+            'latency_ms', 'total_tokens', 'prompt_tokens', 'completion_tokens',
+            'input_audit_safe', 'input_audit_score', 'input_audit_reason',
+            'output_audit_safe', 'output_audit_score', 'output_audit_reason',
+            'client_ip', 'error'];
+        const rows = _auditLogsCache.map(log =>
+            headers.map(h => {
+                let v = log[h];
+                if (v === null || v === undefined) v = '';
+                v = String(v).replace(/"/g, '""');
+                return `"${v}"`;
+            }).join(',')
+        );
+        const csv = '\uFEFF' + headers.join(',') + '\n' + rows.join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        _downloadBlob(blob, `audit-logs-${now}.csv`);
+        showToast(`已导出 ${_auditLogsCache.length} 条日志 (CSV)`, 'success');
     }
 }
 
-// ========== 导出报告（从评估详情弹窗调用） ==========
-async function exportEvalReport(format) {
-    if (!_currentEvalTaskId) {
-        showToast('无法确定任务ID', 'error');
-        return;
-    }
-    try {
-        const result = await API.request(`/evaluation/tasks/${_currentEvalTaskId}/export`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ format }),
-        });
-        showToast(`报告已生成：${result.data.report_name}`, 'success');
-    } catch (error) {
-        showToast('导出失败: ' + error.message, 'error');
-    }
-}
-
-// ========== 预览报告 ==========
-async function previewReport(reportId) {
-    try {
-        const result = await API.request(`/evaluation/reports/${reportId}`);
-        const report = result.data;
-
-        if (report.report_format === 'html') {
-            const win = window.open('', '_blank');
-            win.document.write(report.content);
-            win.document.close();
-        } else {
-            // JSON 预览：在新窗口中格式化显示
-            let parsed;
-            try {
-                parsed = JSON.parse(report.content);
-            } catch (e) {
-                parsed = report.content;
-            }
-            const win = window.open('', '_blank');
-            win.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(report.report_name)}</title>
-                <style>body{font-family:monospace;padding:1rem;white-space:pre-wrap;word-break:break-all;}</style>
-                </head><body>${escapeHtml(JSON.stringify(parsed, null, 2))}</body></html>`);
-            win.document.close();
-        }
-    } catch (error) {
-        showToast('预览失败: ' + error.message, 'error');
-    }
-}
-
-// ========== 下载报告 ==========
-function downloadReport(reportId) {
-    window.open(`${API_BASE}/evaluation/reports/${reportId}/download`, '_blank');
-}
-
-// ========== 删除报告 ==========
-async function deleteReport(reportId) {
-    if (!confirm('确定删除该报告？')) return;
-    try {
-        await API.request(`/evaluation/reports/${reportId}`, { method: 'DELETE' });
-        showToast('报告已删除', 'success');
-        loadReports();
-    } catch (error) {
-        showToast('删除失败: ' + error.message, 'error');
-    }
+function _downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }
 
 // ========== 工具函数 ==========
-function formatFileSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+function _formatNumber(n) {
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return String(n);
+}
+
+// ========== 页面初始化 ==========
+function initAuditPage() {
+    loadAuditStats();
 }

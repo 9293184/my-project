@@ -14,6 +14,7 @@ function initProxyPage() {
     loadProxyConfig();
     loadProxyStats();
     loadProxyTasks();
+    loadProxyUsers();
     loadProxyLogs();
 }
 
@@ -27,10 +28,18 @@ async function loadProxyConfig() {
             document.getElementById('proxy-judge-url').value = data.config.judge_url || '';
             document.getElementById('proxy-judge-model').value = data.config.judge_model || '';
             document.getElementById('proxy-judge-key').value = '';
-            document.getElementById('proxy-judge-key').placeholder = data.config.judge_key_set ? '已设置（留空不修改）' : '本地 Ollama 无需填写';
+            document.getElementById('proxy-judge-key').placeholder = data.config.judge_key_set ? '已设置（留空不修改）' : 'sk-xxxx...';
+            document.getElementById('proxy-http-proxy').value = data.config.http_proxy || '';
             const badge = document.getElementById('proxy-engine-status');
-            badge.textContent = '运行中';
-            badge.style.background = '#27ae60';
+            // 判断用户是否已配置过（key 未设置且使用默认地址视为未配置）
+            const isDefault = !data.config.judge_key_set && data.config.judge_url && data.config.judge_url.includes('deepseek.com');
+            if (isDefault) {
+                badge.textContent = '待配置';
+                badge.style.background = '#f39c12';
+            } else {
+                badge.textContent = '运行中';
+                badge.style.background = '#27ae60';
+            }
         }
     } catch (e) {
         console.error('加载代理配置失败:', e);
@@ -44,16 +53,13 @@ async function saveProxyConfig() {
     const judge_url = document.getElementById('proxy-judge-url').value.trim();
     const judge_model = document.getElementById('proxy-judge-model').value.trim();
     const judge_key = document.getElementById('proxy-judge-key').value.trim();
-
-    if (!judge_url && !judge_model) {
-        showToast('请至少填写审查模型地址或名称', 'warning');
-        return;
-    }
+    const http_proxy = document.getElementById('proxy-http-proxy').value.trim();
 
     const body = {};
     if (judge_url) body.judge_url = judge_url;
     if (judge_model) body.judge_model = judge_model;
     if (judge_key) body.judge_key = judge_key;
+    body.http_proxy = http_proxy;
 
     try {
         const resp = await fetch(`${PROXY_API}/proxy/v1/config`, {
@@ -101,6 +107,7 @@ async function loadProxyTasks() {
             proxyTasksCache = data.tasks || [];
             renderTasksTable();
             updateChatProxySelect();
+            updateUserProxyFilter();
         }
     } catch (e) {
         console.error('加载代理项目失败:', e);
@@ -133,9 +140,17 @@ function renderTasksTable() {
         const layers = _strategyBadge(ac);
         const threshold = ac.block_threshold || t.min_confidence || 60;
         const proxyAddr = `${window.location.origin}/proxy/${t.proxy_id}/v1`;
-        return `<tr>
+        const paused = t.paused;
+        const statusBadge = paused
+            ? '<span style="background:#e74c3c;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.75rem;font-weight:600;">已暂停</span>'
+            : '<span style="background:#27ae60;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.75rem;font-weight:600;">运行中</span>';
+        const pauseBtn = paused
+            ? `<button class="btn btn-sm" style="background:#27ae60;color:#fff;" onclick="togglePauseTask('${t.proxy_id}',false)" title="恢复"><i class="fas fa-play"></i></button>`
+            : `<button class="btn btn-outline btn-sm" onclick="togglePauseTask('${t.proxy_id}',true)" title="暂停"><i class="fas fa-pause"></i></button>`;
+        const rowStyle = paused ? 'opacity:0.6;' : '';
+        return `<tr style="${rowStyle}">
             <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:3px;font-size:0.85rem;">${t.proxy_id}</code></td>
-            <td>${escapeHtml(t.name)}</td>
+            <td>${escapeHtml(t.name)} ${statusBadge}</td>
             <td title="${escapeHtml(t.upstream_url)}" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(t.upstream_url)}</td>
             <td title="${proxyAddr}" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:var(--primary-color);"
                 onclick="navigator.clipboard.writeText('${proxyAddr}');showToast('已复制','success')">
@@ -144,6 +159,7 @@ function renderTasksTable() {
             <td><span style="color:${dirColor};font-weight:600;">${direction}</span> ${layers}</td>
             <td>${threshold}</td>
             <td style="white-space:nowrap;">
+                ${pauseBtn}
                 <button class="btn btn-outline btn-sm" onclick="editTask('${t.proxy_id}')"><i class="fas fa-edit"></i></button>
                 <button class="btn btn-danger btn-sm" onclick="deleteTaskConfirm('${t.proxy_id}','${escapeHtml(t.name)}')"><i class="fas fa-trash"></i></button>
             </td>
@@ -211,6 +227,11 @@ function _collectSideConfig(prefix) {
     };
 }
 
+function toggleHistoryDetail() {
+    const enabled = document.getElementById('ac-history-enabled').checked;
+    document.getElementById('ac-history-detail').style.display = enabled ? '' : 'none';
+}
+
 function copyProxyUrl() {
     const input = document.getElementById('task-proxy-url-display');
     navigator.clipboard.writeText(input.value).then(() => {
@@ -257,6 +278,13 @@ function openTaskModal(task) {
         _loadSideConfig('output', defaultSide);
     }
 
+    // 加载对话历史配置
+    const histCfg = (cfg && cfg.context_history) || {};
+    const histEnabled = !!histCfg.enabled;
+    document.getElementById('ac-history-enabled').checked = histEnabled;
+    document.getElementById('ac-history-window').value = histCfg.window || 10;
+    document.getElementById('ac-history-detail').style.display = histEnabled ? '' : 'none';
+
     switchAuditTab(direction);
     openModal('task-modal');
 }
@@ -282,6 +310,10 @@ async function saveTask() {
     const auditConfig = {
         direction: _currentAuditDirection,
         ...sideCfg,
+        context_history: {
+            enabled: document.getElementById('ac-history-enabled').checked,
+            window: parseInt(document.getElementById('ac-history-window').value) || 10,
+        },
     };
 
     const body = {
@@ -333,6 +365,29 @@ async function deleteProxyTask(proxyId) {
     }
 }
 
+// ─── 暂停/恢复代理 ──────────────────────────────────
+
+async function togglePauseTask(proxyId, paused) {
+    const action = paused ? '暂停' : '恢复';
+    if (paused && !confirm(`确认暂停该代理项目？暂停后所有请求将被拒绝。`)) return;
+    try {
+        const resp = await fetch(`${PROXY_API}/proxy/v1/tasks/${proxyId}/pause`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paused }),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast(`代理已${action}`, 'success');
+            loadProxyTasks();
+        } else {
+            showToast(data.error || `${action}失败`, 'error');
+        }
+    } catch (e) {
+        showToast(`${action}失败: ` + e.message, 'error');
+    }
+}
+
 // ─── 对话测试页面 — 代理项目下拉 ─────────────────
 
 function updateChatProxySelect() {
@@ -376,18 +431,21 @@ function onChatProxyChange() {
         return;
     }
     const ac = task.audit_config || {};
+    const dir = ac.direction || 'both';
+    const inputOn = dir === 'input' || dir === 'both';
+    const outputOn = dir === 'output' || dir === 'both';
     info.innerHTML = `
         <div style="line-height:1.8;">
             <div><strong>代理号:</strong> <code>${task.proxy_id}</code></div>
             <div><strong>接入地址:</strong></div>
             <code style="display:block;background:#1a1a2e;color:#0f0;padding:0.4rem 0.6rem;border-radius:4px;font-size:0.8rem;word-break:break-all;margin:0.25rem 0;">
-                ${PROXY_API}/proxy/v1/chat/completions
+                ${PROXY_API}/proxy/${task.proxy_id}/v1/chat/completions
             </code>
             <div><strong>上游:</strong> ${escapeHtml(truncate(task.upstream_url, 40))}</div>
             <div><strong>模型:</strong> ${escapeHtml(task.model || '(未设置)')}</div>
-            <div><strong>输入策略:</strong> ${_describeSide(ac.input)}</div>
-            <div><strong>输出策略:</strong> ${_describeSide(ac.output)}</div>
-            <div><strong>拦截阈值:</strong> ${(ac.input && ac.input.block_threshold) || task.min_confidence || 60}</div>
+            <div><strong>输入审查:</strong> ${inputOn ? '<span style="color:#27ae60;">✅ 开</span>' : '<span style="color:#e74c3c;">❌ 关</span>'}</div>
+            <div><strong>输出审查:</strong> ${outputOn ? '<span style="color:#27ae60;">✅ 开</span>' : '<span style="color:#e74c3c;">❌ 关</span>'}</div>
+            <div><strong>拦截阈值:</strong> ${ac.block_threshold || task.min_confidence || 60}</div>
             <div><strong>API Key:</strong> ${task.api_key ? '已设置' : '未设置'}</div>
         </div>`;
 }
@@ -400,10 +458,200 @@ function initChatPage() {
     }
 }
 
+// ─── 用户管理 ───────────────────────────────────────
+
+let _proxyUsersCache = [];
+
+function updateUserProxyFilter() {
+    const select = document.getElementById('user-proxy-filter');
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '<option value="">全部代理项目</option>' +
+        proxyTasksCache.map(t =>
+            `<option value="${t.proxy_id}">${escapeHtml(t.name)} (${t.proxy_id})</option>`
+        ).join('');
+    if (current) select.value = current;
+}
+
+async function loadProxyUsers() {
+    const proxyId = document.getElementById('user-proxy-filter').value;
+    const tbody = document.getElementById('proxy-users-table');
+    if (!tbody) return;
+
+    try {
+        const url = proxyId
+            ? `${PROXY_API}/proxy/v1/users?proxy_id=${proxyId}`
+            : `${PROXY_API}/proxy/v1/users`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+
+        if (!data.success || !data.users || data.users.length === 0) {
+            _proxyUsersCache = [];
+            tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--text-secondary);">
+                <i class="fas fa-users" style="font-size:1.5rem;margin-bottom:0.5rem;display:block;opacity:0.5;"></i>
+                暂无用户记录</td></tr>`;
+            return;
+        }
+
+        _proxyUsersCache = data.users;
+        tbody.innerHTML = data.users.map((u, idx) => {
+            const lastActive = u.last_active ? new Date(u.last_active).toLocaleString('zh-CN') : '-';
+            const blockRate = u.total_requests > 0 ? ((u.blocked_count / u.total_requests) * 100).toFixed(1) : '0.0';
+            const isBanned = u.banned;
+            const statusBadge = isBanned
+                ? '<span style="background:#e74c3c;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.75rem;font-weight:600;">已封禁</span>'
+                : '<span style="background:#27ae60;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.75rem;font-weight:600;">正常</span>';
+            const rowBg = isBanned ? 'background:rgba(231,76,60,0.05);' : '';
+            const blockRateColor = parseFloat(blockRate) > 20 ? '#e74c3c' : parseFloat(blockRate) > 5 ? '#f39c12' : '#27ae60';
+
+            // 操作按钮
+            const banBtn = isBanned
+                ? `<button class="btn btn-sm" style="background:#27ae60;color:#fff;padding:2px 8px;font-size:0.75rem;" onclick="unbanProxyUser('${escapeHtml(u.user_id)}')" title="解封"><i class="fas fa-unlock"></i> 解封</button>`
+                : `<button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:0.75rem;" onclick="banProxyUser('${escapeHtml(u.user_id)}')" title="封禁"><i class="fas fa-ban"></i> 封禁</button>`;
+            const logBtn = `<button class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:0.75rem;" onclick="viewUserLogs('${escapeHtml(u.user_id)}')" title="查看日志"><i class="fas fa-eye"></i></button>`;
+
+            return `<tr style="${rowBg}">
+                <td style="text-align:center;color:#999;font-size:0.8rem;">${idx + 1}</td>
+                <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:3px;font-size:0.85rem;">${escapeHtml(u.user_id)}</code></td>
+                <td style="text-align:right;font-family:monospace;">${u.total_requests}</td>
+                <td style="text-align:right;font-family:monospace;"><span style="color:${blockRateColor};">${u.blocked_count}</span> <small style="color:#888;">(${blockRate}%)</small></td>
+                <td style="text-align:right;font-family:monospace;">${(u.total_tokens || 0).toLocaleString()}</td>
+                <td style="font-size:0.85rem;">${lastActive}</td>
+                <td style="text-align:center;">${statusBadge}</td>
+                <td style="text-align:center;white-space:nowrap;">${logBtn} ${banBtn}</td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#e74c3c;">加载失败: ${e.message}</td></tr>`;
+    }
+}
+
+async function banProxyUser(userId) {
+    const proxyId = document.getElementById('user-proxy-filter').value;
+    if (!proxyId) {
+        showToast('请先选择一个代理项目再执行封禁操作', 'warning');
+        return;
+    }
+    if (!confirm(`确认封禁用户「${userId}」？封禁后该用户的所有请求将被拒绝。`)) return;
+    try {
+        const resp = await fetch(`${PROXY_API}/proxy/v1/tasks/${proxyId}/ban`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: userId }),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast(`用户 ${userId} 已封禁`, 'success');
+            loadProxyUsers();
+            loadProxyTasks();
+        } else {
+            showToast(data.error || '封禁失败', 'error');
+        }
+    } catch (e) {
+        showToast('封禁失败: ' + e.message, 'error');
+    }
+}
+
+async function unbanProxyUser(userId) {
+    const proxyId = document.getElementById('user-proxy-filter').value;
+    if (!proxyId) {
+        showToast('请先选择一个代理项目再执行解封操作', 'warning');
+        return;
+    }
+    try {
+        const resp = await fetch(`${PROXY_API}/proxy/v1/tasks/${proxyId}/unban`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: userId }),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast(`用户 ${userId} 已解封`, 'success');
+            loadProxyUsers();
+            loadProxyTasks();
+        } else {
+            showToast(data.error || '解封失败', 'error');
+        }
+    } catch (e) {
+        showToast('解封失败: ' + e.message, 'error');
+    }
+}
+
+function viewUserLogs(userId) {
+    // 滚动到日志区域并按用户过滤
+    const logSection = document.getElementById('proxy-logs-container');
+    if (logSection) logSection.scrollIntoView({ behavior: 'smooth' });
+    // 加载该用户的日志
+    _loadUserFilteredLogs(userId);
+}
+
+async function _loadUserFilteredLogs(userId) {
+    const limit = parseInt(document.getElementById('proxy-log-limit').value) || 30;
+    const tbody = document.getElementById('proxy-logs-table');
+    try {
+        const resp = await fetch(`${PROXY_API}/proxy/v1/logs?limit=${limit}&user_id=${encodeURIComponent(userId)}`);
+        const data = await resp.json();
+        if (!data.success || !data.logs || data.logs.length === 0) {
+            _proxyLogsCache = [];
+            tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--text-secondary);">
+                用户「${escapeHtml(userId)}」暂无日志记录</td></tr>`;
+            return;
+        }
+        _proxyLogsCache = data.logs;
+        // 复用已有渲染逻辑
+        _renderLogsTable(data.logs);
+        showToast(`已筛选用户「${userId}」的日志`, 'info');
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#e74c3c;">加载失败: ${e.message}</td></tr>`;
+    }
+}
+
+function _renderLogsTable(logs) {
+    const tbody = document.getElementById('proxy-logs-table');
+    tbody.innerHTML = logs.map((log, idx) => {
+        const time = log.timestamp ? new Date(log.timestamp).toLocaleString('zh-CN') : '-';
+        const model = log.model || '-';
+        const status = log.status_code || '-';
+        const latency = log.latency_ms != null ? log.latency_ms + 'ms' : '-';
+        const tokens = log.total_tokens || 0;
+        const isBlocked = log.input_audit_safe === 0 || log.output_audit_safe === 0;
+        const isError = status >= 400 || log.error;
+        let statusHtml;
+        if (isBlocked) {
+            statusHtml = `<span class="log-badge log-badge-blocked">${status}</span>`;
+        } else if (isError) {
+            statusHtml = `<span class="log-badge log-badge-error">${status}</span>`;
+        } else {
+            statusHtml = `<span class="log-badge log-badge-ok">${status}</span>`;
+        }
+        const inputBadge = _auditBadge(log.input_audit_safe, log.input_audit_score);
+        const outputBadge = _auditBadge(log.output_audit_safe, log.output_audit_score);
+        const rowBg = isBlocked ? 'background:rgba(231,76,60,0.05);' : isError ? 'background:rgba(243,156,18,0.05);' : '';
+        return `<tr style="cursor:pointer;${rowBg}" onclick="showLogDetail(${idx})" title="点击查看详情">
+            <td style="text-align:center;color:#999;font-size:0.8rem;">${idx + 1}</td>
+            <td style="white-space:nowrap;font-size:0.85rem;">${time}</td>
+            <td style="font-size:0.9rem;">${model}</td>
+            <td style="text-align:center;">${statusHtml}</td>
+            <td style="text-align:right;font-family:monospace;font-size:0.85rem;">${latency}</td>
+            <td style="text-align:right;font-family:monospace;font-size:0.85rem;">${tokens}</td>
+            <td style="text-align:center;">${inputBadge}</td>
+            <td style="text-align:center;">${outputBadge}</td>
+            <td style="text-align:center;">
+                <button class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:0.75rem;" onclick="event.stopPropagation();showLogDetail(${idx})">
+                    <i class="fas fa-eye"></i>
+                </button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
 // ─── 代理日志 ───────────────────────────────────────
+
+let _proxyLogsCache = [];
 
 async function loadProxyLogs() {
     const limit = parseInt(document.getElementById('proxy-log-limit').value) || 30;
+    const statusFilter = document.getElementById('proxy-log-status-filter').value;
     const tbody = document.getElementById('proxy-logs-table');
 
     try {
@@ -411,49 +659,163 @@ async function loadProxyLogs() {
         const data = await resp.json();
 
         if (!data.success || !data.logs || data.logs.length === 0) {
+            _proxyLogsCache = [];
             tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:3rem;color:var(--text-secondary);">
                 <i class="fas fa-inbox" style="font-size:2rem;margin-bottom:1rem;display:block;opacity:0.5;"></i>
                 暂无代理日志</td></tr>`;
             return;
         }
 
-        tbody.innerHTML = data.logs.map(log => {
+        // 前端过滤
+        let logs = data.logs;
+        if (statusFilter === 'success') {
+            logs = logs.filter(l => l.status_code >= 200 && l.status_code < 300 && l.input_audit_safe !== 0 && l.output_audit_safe !== 0);
+        } else if (statusFilter === 'blocked') {
+            logs = logs.filter(l => l.input_audit_safe === 0 || l.output_audit_safe === 0);
+        } else if (statusFilter === 'error') {
+            logs = logs.filter(l => l.status_code >= 400 || l.error);
+        }
+
+        _proxyLogsCache = logs;
+
+        if (logs.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--text-secondary);">无匹配记录</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = logs.map((log, idx) => {
             const time = log.timestamp ? new Date(log.timestamp).toLocaleString('zh-CN') : '-';
-            const url = log.url ? truncate(log.url, 30) : '-';
             const model = log.model || '-';
             const status = log.status_code || '-';
-            const latency = log.latency_ms ? log.latency_ms + 'ms' : '-';
+            const latency = log.latency_ms != null ? log.latency_ms + 'ms' : '-';
             const tokens = log.total_tokens || 0;
 
-            const inputSafe = log.input_audit_safe;
-            const inputBadge = inputSafe === null || inputSafe === undefined ? '<span style="color:#999;">-</span>'
-                : inputSafe ? '<span style="color:#27ae60;">✅ 安全</span>'
-                : `<span style="color:#e74c3c;">🚫 风险(${log.input_audit_score || 0})</span>`;
+            // 状态标签
+            const isBlocked = log.input_audit_safe === 0 || log.output_audit_safe === 0;
+            const isError = status >= 400 || log.error;
+            let statusHtml;
+            if (isBlocked) {
+                statusHtml = `<span class="log-badge log-badge-blocked">${status}</span>`;
+            } else if (isError) {
+                statusHtml = `<span class="log-badge log-badge-error">${status}</span>`;
+            } else {
+                statusHtml = `<span class="log-badge log-badge-ok">${status}</span>`;
+            }
 
-            const outputSafe = log.output_audit_safe;
-            const outputBadge = outputSafe === null || outputSafe === undefined ? '<span style="color:#999;">-</span>'
-                : outputSafe ? '<span style="color:#27ae60;">✅ 安全</span>'
-                : `<span style="color:#e74c3c;">🚫 风险(${log.output_audit_score || 0})</span>`;
+            // 审查标签
+            const inputBadge = _auditBadge(log.input_audit_safe, log.input_audit_score);
+            const outputBadge = _auditBadge(log.output_audit_safe, log.output_audit_score);
 
-            const error = log.error ? `<span style="color:#e74c3c;" title="${escapeHtml(log.error)}">${truncate(log.error, 20)}</span>` : '-';
+            // 行背景色
+            const rowBg = isBlocked ? 'background:rgba(231,76,60,0.05);' : isError ? 'background:rgba(243,156,18,0.05);' : '';
 
-            const statusColor = status >= 200 && status < 300 ? '#27ae60' : status >= 400 ? '#e74c3c' : '#f39c12';
-
-            return `<tr>
+            return `<tr style="cursor:pointer;${rowBg}" onclick="showLogDetail(${idx})" title="点击查看详情">
+                <td style="text-align:center;color:#999;font-size:0.8rem;">${idx + 1}</td>
                 <td style="white-space:nowrap;font-size:0.85rem;">${time}</td>
-                <td title="${escapeHtml(log.url || '')}" style="font-size:0.85rem;">${url}</td>
-                <td>${model}</td>
-                <td><span style="color:${statusColor};font-weight:600;">${status}</span></td>
-                <td>${latency}</td>
-                <td>${tokens}</td>
-                <td>${inputBadge}</td>
-                <td>${outputBadge}</td>
-                <td>${error}</td>
+                <td style="font-size:0.9rem;">${model}</td>
+                <td style="text-align:center;">${statusHtml}</td>
+                <td style="text-align:right;font-family:monospace;font-size:0.85rem;">${latency}</td>
+                <td style="text-align:right;font-family:monospace;font-size:0.85rem;">${tokens}</td>
+                <td style="text-align:center;">${inputBadge}</td>
+                <td style="text-align:center;">${outputBadge}</td>
+                <td style="text-align:center;">
+                    <button class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:0.75rem;" onclick="event.stopPropagation();showLogDetail(${idx})">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                </td>
             </tr>`;
         }).join('');
 
     } catch (e) {
         tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#e74c3c;">加载失败: ${e.message}</td></tr>`;
+    }
+}
+
+function _auditBadge(safe, score) {
+    if (safe === null || safe === undefined) return '<span style="color:#999;font-size:0.8rem;">-</span>';
+    if (safe) return '<span style="color:#27ae60;font-size:0.85rem;"><i class="fas fa-check-circle"></i> 安全</span>';
+    return `<span style="color:#e74c3c;font-size:0.85rem;"><i class="fas fa-times-circle"></i> ${score || 0}分</span>`;
+}
+
+// ─── 日志详情弹窗 ─────────────────────────────────
+
+function showLogDetail(idx) {
+    const log = _proxyLogsCache[idx];
+    if (!log) return;
+
+    // 基本信息
+    document.getElementById('log-detail-id').textContent = `#${log.request_id || idx + 1}`;
+    document.getElementById('ld-time').textContent = log.timestamp ? new Date(log.timestamp).toLocaleString('zh-CN') : '-';
+    document.getElementById('ld-request-id').textContent = log.request_id || '-';
+    document.getElementById('ld-url').textContent = log.url || '-';
+    document.getElementById('ld-model').textContent = log.model || '-';
+
+    const status = log.status_code || '-';
+    const statusColor = status >= 200 && status < 300 ? '#27ae60' : status >= 400 ? '#e74c3c' : '#f39c12';
+    document.getElementById('ld-status').innerHTML = `<span style="color:${statusColor};font-weight:600;">${status}</span>`;
+    document.getElementById('ld-latency').textContent = log.latency_ms != null ? log.latency_ms + ' ms' : '-';
+
+    const pt = log.prompt_tokens || 0, ct = log.completion_tokens || 0, tt = log.total_tokens || 0;
+    document.getElementById('ld-tokens').textContent = tt > 0 ? `${tt} (输入${pt} + 输出${ct})` : '-';
+    document.getElementById('ld-client-ip').textContent = log.client_ip || '-';
+
+    // 审查结果
+    document.getElementById('ld-input-audit').innerHTML = _auditDetailHtml(log.input_audit_safe, log.input_audit_score, log.input_audit_reason);
+    document.getElementById('ld-output-audit').innerHTML = _auditDetailHtml(log.output_audit_safe, log.output_audit_score, log.output_audit_reason);
+
+    // 请求/响应体
+    const reqBody = _parseJsonField(log.request_body);
+    const resBody = _parseJsonField(log.response_body);
+    document.getElementById('ld-request-body').textContent = reqBody ? JSON.stringify(reqBody, null, 2) : '(无数据)';
+    document.getElementById('ld-response-body').textContent = resBody ? JSON.stringify(resBody, null, 2) : '(无数据)';
+    // 默认显示请求体
+    toggleLogPanel('request');
+
+    // 错误
+    const errSection = document.getElementById('ld-error-section');
+    if (log.error) {
+        errSection.style.display = '';
+        document.getElementById('ld-error').textContent = log.error;
+    } else {
+        errSection.style.display = 'none';
+    }
+
+    openModal('log-detail-modal');
+}
+
+function _auditDetailHtml(safe, score, reason) {
+    if (safe === null || safe === undefined) return '<span style="color:#999;">未执行审查</span>';
+    const color = safe ? '#27ae60' : '#e74c3c';
+    const icon = safe ? 'check-circle' : 'times-circle';
+    const label = safe ? '安全' : '风险';
+    let html = `<div style="margin-bottom:0.25rem;"><i class="fas fa-${icon}" style="color:${color};"></i> <strong style="color:${color};">${label}</strong>`;
+    if (score != null) html += ` <span style="color:#888;">(${score}分)</span>`;
+    html += '</div>';
+    if (reason) html += `<div style="font-size:0.85rem;color:#ccc;line-height:1.4;">${escapeHtml(reason)}</div>`;
+    return html;
+}
+
+function _parseJsonField(val) {
+    if (!val) return null;
+    if (typeof val === 'object') return val;
+    try { return JSON.parse(val); } catch { return val; }
+}
+
+function toggleLogPanel(panel) {
+    const reqEl = document.getElementById('ld-request-body');
+    const resEl = document.getElementById('ld-response-body');
+    const btnReq = document.getElementById('ld-btn-request');
+    const btnRes = document.getElementById('ld-btn-response');
+    if (panel === 'request') {
+        reqEl.style.display = '';
+        resEl.style.display = 'none';
+        btnReq.style.fontWeight = '600';
+        btnRes.style.fontWeight = '';
+    } else {
+        reqEl.style.display = 'none';
+        resEl.style.display = '';
+        btnReq.style.fontWeight = '';
+        btnRes.style.fontWeight = '600';
     }
 }
 
@@ -545,79 +907,6 @@ async function aiGenerateRegex(prefix) {
         showToast('生成失败: ' + e.message, 'error');
     } finally {
         if (btn) { btn.innerHTML = origText; btn.disabled = false; }
-    }
-}
-
-// ─── 策略模板 ──────────────────────────────────────
-
-async function saveStrategyTemplate() {
-    const name = prompt('请输入模板名称：');
-    if (!name || !name.trim()) return;
-
-    const collectFrom = _currentAuditDirection === 'output' ? 'output' : 'input';
-    const sideCfg = _collectSideConfig(collectFrom);
-    const auditConfig = { direction: _currentAuditDirection, ...sideCfg };
-    const securityPrompt = document.getElementById('task-security-prompt').value.trim();
-
-    try {
-        const resp = await fetch(`${PROXY_API}/proxy/v1/templates`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name: name.trim(),
-                direction: _currentAuditDirection,
-                security_prompt: securityPrompt,
-                audit_config: auditConfig,
-            }),
-        });
-        const data = await resp.json();
-        if (data.success) {
-            showToast(`策略模板「${name.trim()}」已保存`, 'success');
-        } else {
-            showToast(data.error || '保存失败', 'error');
-        }
-    } catch (e) {
-        showToast('保存失败: ' + e.message, 'error');
-    }
-}
-
-async function loadStrategyTemplate() {
-    try {
-        const resp = await fetch(`${PROXY_API}/proxy/v1/templates`);
-        const data = await resp.json();
-        if (!data.success || !data.templates || data.templates.length === 0) {
-            showToast('暂无策略模板', 'warning');
-            return;
-        }
-        const tpls = data.templates;
-        const dirLabel = { input: '输入', output: '输出', both: '双向' };
-        const choices = tpls.map((t, i) => `${i + 1}. ${t.name} (${dirLabel[t.direction] || t.direction})`).join('\n');
-        const input = prompt(`选择模板编号：\n${choices}`);
-        if (!input) return;
-        const idx = parseInt(input) - 1;
-        if (isNaN(idx) || idx < 0 || idx >= tpls.length) {
-            showToast('无效选择', 'warning');
-            return;
-        }
-        const tpl = tpls[idx];
-        const ac = tpl.audit_config || {};
-        const direction = ac.direction || tpl.direction || 'input';
-
-        // 加载安全提示词
-        if (tpl.security_prompt) {
-            document.getElementById('task-security-prompt').value = tpl.security_prompt;
-        }
-
-        // 加载审查配置到对应面板
-        if (direction === 'output') {
-            _loadSideConfig('output', ac);
-        } else {
-            _loadSideConfig('input', ac);
-        }
-        switchAuditTab(direction);
-        showToast(`已加载模板「${tpl.name}」`, 'success');
-    } catch (e) {
-        showToast('加载失败: ' + e.message, 'error');
     }
 }
 

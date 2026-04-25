@@ -1,0 +1,18 @@
+import sqlite3, json
+conn = sqlite3.connect('proxy_logs.db')
+c = conn.cursor()
+c.execute('SELECT security_prompt, audit_config FROM proxy_tasks WHERE proxy_id="PX-c44d7ce8"')
+row = c.fetchone()
+conn.close()
+
+print("=== 当前 security_prompt ===")
+print(row[0])
+print("\n=== audit_config ===")
+cfg = json.loads(row[1])
+print(f"direction:       {cfg.get('direction')}")
+print(f"enabled:         {cfg.get('enabled')}")
+print(f"block_threshold: {cfg.get('block_threshold')}")
+print(f"builtin_rules:   {cfg.get('builtin_rules', '【未配置，默认禁用】')}")
+print(f"llm_judge:       {cfg.get('llm_judge')}")
+cr = cfg.get('custom_regex', {})
+print(f"custom_regex:    enabled={cr.get('enabled')}, action={cr.get('action')}, rules={len(cr.get('rules',[]))}条")

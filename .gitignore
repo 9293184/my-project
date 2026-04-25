@@ -31,3 +31,33 @@ MCPScan/
 # 运行时数据
 *.db
 *.jsonl
+
+# 打包产物（不上传）
+*.zip
+答辩PPT_打包/
+部署包/
+参赛材料汇总/
+作品报告(3).files/
+作品报告(3).htm
+_report_extracted.md
+
+# 测试数据产物
+测试/
+
+# 临时文档与中间产物
+LLM安全代理网关-参赛文档*.md
+AI工具使用说明.md
+竞品分析与痛点研究.md
+待绘制图表说明.md
+图3-系统流程图.md
+extract_tables.py
+docx_content.*
+
+# 🔑 包含硬编码 API Key 的工具脚本（不上传）
+backend/create_medical_task.py
+backend/create_injection_guard_task.py
+
+# 答辩 & 流程图成品（可选：保留也行，不想传就注释掉）
+答辩PPT.html
+三层协同审查流程图*.html
+分级管控流程图*.html

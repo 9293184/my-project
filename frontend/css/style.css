@@ -436,10 +436,14 @@ select.form-control {
     background: var(--card-bg);
     border-radius: var(--border-radius);
     width: 90%;
-    max-width: 500px;
+    max-width: 600px;
     max-height: 90vh;
     overflow-y: auto;
     animation: modalIn 0.3s ease;
+}
+
+.modal-content.modal-lg {
+    max-width: 900px;
 }
 
 @keyframes modalIn {
@@ -455,7 +459,8 @@ select.form-control {
     border-bottom: 1px solid var(--border-color);
 }
 
-.modal-header h2 {
+.modal-header h2,
+.modal-header h3 {
     font-size: 1.125rem;
     font-weight: 600;
 }
@@ -981,4 +986,46 @@ select.form-control {
     margin-top: 0.25rem;
     font-size: 0.75rem;
     color: var(--text-secondary);
+}
+
+/* ========== 日志标签 ========== */
+.log-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-family: monospace;
+}
+.log-badge-ok {
+    background: rgba(39, 174, 96, 0.12);
+    color: #27ae60;
+}
+.log-badge-blocked {
+    background: rgba(231, 76, 60, 0.12);
+    color: #e74c3c;
+}
+.log-badge-error {
+    background: rgba(243, 156, 18, 0.12);
+    color: #f39c12;
+}
+
+/* 日志表行 hover */
+#proxy-logs-table tr:hover {
+    background: rgba(79, 70, 229, 0.06) !important;
+}
+
+/* 日志容器滚动条 */
+#proxy-logs-container::-webkit-scrollbar {
+    width: 6px;
+}
+#proxy-logs-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+#proxy-logs-container::-webkit-scrollbar-thumb {
+    background: rgba(0,0,0,0.15);
+    border-radius: 3px;
+}
+#proxy-logs-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(0,0,0,0.25);
 }

@@ -434,12 +434,12 @@ def _run_security_evaluation(task_id: int, task_type: str, config: dict, app):
             judge_model = str(task_model)[3:]
             judge_key = None
 
-    # 无配置时回退到本地 Ollama
+    # 无配置时回退到默认 API 模型
     if not judge_url or not judge_model:
-        judge_url = OLLAMA_API_BASE
-        judge_model = "qwen2.5:latest"
+        judge_url = "https://api.deepseek.com/v1"
+        judge_model = "deepseek-chat"
         judge_key = None
-        _append_task_log(app, task_id, "warn", "未配置审查模型，回退使用本地 Ollama 模型 qwen2.5:latest")
+        _append_task_log(app, task_id, "warn", "未配置审查模型，回退使用默认 API 模型 deepseek-chat")
     else:
         _append_task_log(app, task_id, "info", f"使用审查模型: {judge_model}")
 

@@ -19,7 +19,7 @@ from .routes.poison_detection import bp as poison_detection_bp
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from proxy.routes import bp as proxy_bp, init_audit_engine
+from proxy.routes import bp as proxy_bp, init_audit_engine, init_audit_engine_from_db
 
 logger = logging.getLogger(__name__)
 
@@ -57,17 +57,9 @@ def create_app() -> Flask:
     app.register_blueprint(poison_detection_bp)
     app.register_blueprint(proxy_bp)
 
-    # 初始化代理审查引擎（使用数据库中的judge配置或默认Ollama）
+    # 初始化代理审查引擎（从 SQLite 读取用户保存的配置，首次部署使用默认值）
     try:
-        from .services.config_service import get_judge_config
-        from .db import db_cursor
-        with db_cursor(settings) as (conn, cursor):
-            judge_url, judge_model, judge_key = get_judge_config(cursor)
-        init_audit_engine(
-            judge_url=judge_url or 'http://localhost:11434/v1',
-            judge_model=judge_model or 'huihui_ai/qwen3-abliterated:8b',
-            judge_key=judge_key,
-        )
+        init_audit_engine_from_db()
     except Exception as e:
         logger.warning(f'代理审查引擎初始化失败(将使用默认配置): {e}')
         init_audit_engine()

@@ -61,14 +61,24 @@ def _ensure_db():
                 error TEXT,
                 stream INTEGER DEFAULT 0,
                 client_ip TEXT,
+                user_id TEXT DEFAULT '',
                 extra TEXT
             )
         """)
+        # 兼容旧表：如果缺少 user_id 列则添加
+        try:
+            conn.execute("SELECT user_id FROM proxy_logs LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE proxy_logs ADD COLUMN user_id TEXT DEFAULT ''")
+            logger.info("[proxy-log] 已迁移: 添加 user_id 列")
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_proxy_logs_ts ON proxy_logs(timestamp)
         """)
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_proxy_logs_provider ON proxy_logs(provider)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_proxy_logs_user_id ON proxy_logs(user_id)
         """)
         conn.commit()
         conn.close()
@@ -98,6 +108,7 @@ class ProxyLogEntry:
         self.error: str = ""
         self.stream: bool = False
         self.client_ip: str = ""
+        self.user_id: str = ""
         self.extra: Dict[str, Any] = {}
 
     def to_dict(self) -> Dict[str, Any]:
@@ -120,6 +131,7 @@ class ProxyLogEntry:
             "error": self.error,
             "stream": self.stream,
             "client_ip": self.client_ip,
+            "user_id": self.user_id,
             "extra": self.extra,
         }
 
@@ -161,8 +173,8 @@ def save_log(entry: ProxyLogEntry):
                 prompt_tokens, completion_tokens, total_tokens,
                 input_audit_safe, input_audit_score, input_audit_reason,
                 output_audit_safe, output_audit_score, output_audit_reason,
-                error, stream, client_ip, extra
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                error, stream, client_ip, user_id, extra
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             entry.timestamp,
             entry.request_id,
@@ -187,6 +199,7 @@ def save_log(entry: ProxyLogEntry):
             entry.error,
             int(entry.stream),
             entry.client_ip,
+            entry.user_id,
             json.dumps(entry.extra, ensure_ascii=False) if entry.extra else None,
         ))
         conn.commit()
@@ -196,7 +209,8 @@ def save_log(entry: ProxyLogEntry):
 
 
 def query_logs(limit: int = 50, provider: str = None,
-               start: str = None, end: str = None) -> list:
+               start: str = None, end: str = None,
+               user_id: str = None) -> list:
     """查询日志记录"""
     _ensure_db()
     conn = sqlite3.connect(_DB_PATH)
@@ -207,6 +221,9 @@ def query_logs(limit: int = 50, provider: str = None,
     if provider:
         sql += " AND provider = ?"
         params.append(provider)
+    if user_id:
+        sql += " AND user_id = ?"
+        params.append(user_id)
     if start:
         sql += " AND timestamp >= ?"
         params.append(start)
@@ -219,6 +236,50 @@ def query_logs(limit: int = 50, provider: str = None,
     rows = conn.execute(sql, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_proxy_users(provider_like: str = None) -> list:
+    """获取所有出现过的用户列表及其统计信息
+
+    Args:
+        provider_like: 按代理项目的 provider (url) 模糊匹配过滤
+
+    Returns:
+        [{ user_id, total_requests, blocked_count, total_tokens, last_active }, ...]
+    """
+    _ensure_db()
+    conn = sqlite3.connect(_DB_PATH)
+
+    where = "WHERE user_id != '' AND user_id IS NOT NULL"
+    params = []
+    if provider_like:
+        where += " AND provider LIKE ?"
+        params.append(f"%{provider_like}%")
+
+    sql = f"""
+        SELECT
+            user_id,
+            COUNT(*) as total_requests,
+            SUM(CASE WHEN input_audit_safe = 0 OR output_audit_safe = 0 THEN 1 ELSE 0 END) as blocked_count,
+            COALESCE(SUM(total_tokens), 0) as total_tokens,
+            MAX(timestamp) as last_active
+        FROM proxy_logs
+        {where}
+        GROUP BY user_id
+        ORDER BY total_requests DESC
+    """
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [
+        {
+            "user_id": r[0],
+            "total_requests": r[1],
+            "blocked_count": r[2],
+            "total_tokens": r[3],
+            "last_active": r[4],
+        }
+        for r in rows
+    ]
 
 
 def get_log_stats() -> Dict[str, Any]:

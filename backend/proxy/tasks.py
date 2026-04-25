@@ -77,7 +77,7 @@ def _ensure_table():
             )
         """)
         # 兼容旧表：如果缺少新增列则添加
-        for col, default in [("custom_regex_rules", "'[]'"), ("audit_config", "''")]:
+        for col, default in [("custom_regex_rules", "'[]'"), ("audit_config", "''"), ("paused", "0"), ("banned_users", "'[]'")]:
             try:
                 conn.execute(f"SELECT {col} FROM proxy_tasks LIMIT 1")
             except sqlite3.OperationalError:
@@ -145,6 +145,15 @@ def get_task(proxy_id: str) -> Optional[Dict[str, Any]]:
     d = dict(row)
     d["enable_input_audit"] = bool(d["enable_input_audit"])
     d["enable_output_audit"] = bool(d["enable_output_audit"])
+    
+    # 兼容 SQLite 中以字符串 '0' 或 '1' 存储的布尔值
+    p_val = d.get("paused", 0)
+    d["paused"] = str(p_val) == "1" if isinstance(p_val, str) else bool(p_val)
+    
+    try:
+        d["banned_users"] = json.loads(d.get("banned_users") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        d["banned_users"] = []
     try:
         d["custom_regex_rules"] = json.loads(d.get("custom_regex_rules") or "[]")
     except (json.JSONDecodeError, TypeError):
@@ -183,6 +192,14 @@ def list_tasks() -> List[Dict[str, Any]]:
         d = dict(row)
         d["enable_input_audit"] = bool(d["enable_input_audit"])
         d["enable_output_audit"] = bool(d["enable_output_audit"])
+        
+        p_val = d.get("paused", 0)
+        d["paused"] = str(p_val) == "1" if isinstance(p_val, str) else bool(p_val)
+        
+        try:
+            d["banned_users"] = json.loads(d.get("banned_users") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d["banned_users"] = []
         try:
             d["custom_regex_rules"] = json.loads(d.get("custom_regex_rules") or "[]")
         except (json.JSONDecodeError, TypeError):
@@ -242,6 +259,51 @@ def delete_task(proxy_id: str) -> bool:
     deleted = cursor.rowcount > 0
     conn.close()
     return deleted
+
+
+def ban_user(proxy_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """将用户加入代理项目的封禁列表"""
+    _ensure_table()
+    task = get_task(proxy_id)
+    if not task:
+        return None
+    banned = task.get("banned_users", [])
+    if user_id not in banned:
+        banned.append(user_id)
+    conn = sqlite3.connect(_DB_PATH)
+    conn.execute("UPDATE proxy_tasks SET banned_users = ?, updated_at = ? WHERE proxy_id = ?",
+                 (json.dumps(banned, ensure_ascii=False), datetime.now().isoformat(), proxy_id))
+    conn.commit()
+    conn.close()
+    return get_task(proxy_id)
+
+
+def unban_user(proxy_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """将用户从代理项目的封禁列表移除"""
+    _ensure_table()
+    task = get_task(proxy_id)
+    if not task:
+        return None
+    banned = task.get("banned_users", [])
+    if user_id in banned:
+        banned.remove(user_id)
+    conn = sqlite3.connect(_DB_PATH)
+    conn.execute("UPDATE proxy_tasks SET banned_users = ?, updated_at = ? WHERE proxy_id = ?",
+                 (json.dumps(banned, ensure_ascii=False), datetime.now().isoformat(), proxy_id))
+    conn.commit()
+    conn.close()
+    return get_task(proxy_id)
+
+
+def pause_task(proxy_id: str, paused: bool = True) -> Optional[Dict[str, Any]]:
+    """暂停或恢复代理项目"""
+    _ensure_table()
+    conn = sqlite3.connect(_DB_PATH)
+    conn.execute("UPDATE proxy_tasks SET paused = ?, updated_at = ? WHERE proxy_id = ?",
+                 (int(paused), datetime.now().isoformat(), proxy_id))
+    conn.commit()
+    conn.close()
+    return get_task(proxy_id)
 
 
 # ─── 策略模板 CRUD ──────────────────────────────────────
